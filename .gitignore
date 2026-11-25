@@ -9,6 +9,8 @@ TestResults/
 # Secrets and local environment overrides
 .env
 .env.*
+!.env.example
+appsettings.Local.json
 appsettings.Production.json
 # Uploaded private media stays in private storage. Keep supplied demo only.
 PrivateMedia/drama-assets/*

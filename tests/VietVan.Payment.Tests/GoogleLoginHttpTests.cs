@@ -28,6 +28,7 @@ using VietVan.API.Middlewares;
 using VietVan.API.Services.Authentication;
 using VietVan.API.Services.Implementations;
 using VietVan.API.Settings;
+using VietVan.API.Hosting;
 using Xunit;
 
 namespace VietVan.Payment.Tests;
@@ -59,19 +60,20 @@ public class GoogleLoginHttpTests
         public const string JwtIssuer = "VietVan.GoogleHttpTests";
         public const string JwtAudience = "VietVan.TestFrontend";
 
-        public static async Task<Fixture> CreateAsync()
+        public static async Task<Fixture> CreateAsync(bool render = false)
         {
             var fixture = new Fixture { Database = await PlatformTestDatabase.CreateAsync() };
             fixture.Database.Db.SubscriptionPackages.Add(new SubscriptionPackage { Name = "Free", TierLevel = 0 });
             await fixture.Database.Db.SaveChangesAsync();
-            var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Development" });
+            var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = render ? "Production" : "Development" });
             builder.Logging.ClearProviders(); builder.WebHost.UseUrls("http://127.0.0.1:0");
             // Load the real Development CORS settings shipped by the API project.
             builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.Development.json"));
             builder.Services.AddControllers().AddApplicationPart(typeof(GoogleAuthController).Assembly);
             builder.Services.AddSingleton<VietVanDbContext>(fixture.Database.Db);
             builder.Services.AddSingleton<GoogleChallengeStore>();
-            builder.Services.Configure<GoogleSignInOptions>(o => o.ClientId = ClientId);
+            builder.Services.Configure<GoogleSignInOptions>(o => { o.ClientId = ClientId; o.ChallengeCookieSameSite = render ? SameSiteMode.None : SameSiteMode.Strict; });
+            if (render) builder.Services.Configure<ForwardedHeadersOptions>(DeploymentConfiguration.ConfigureRenderProxy);
             builder.Services.AddSingleton<IConfigurationManager<OpenIdConnectConfiguration>>(new FixedGoogleKeys(new RsaSecurityKey(fixture.GoogleRsa) { KeyId = "test-google-key" }));
             builder.Services.AddScoped<IGoogleIdTokenValidator, GoogleIdTokenValidator>();
             builder.Services.AddScoped<GoogleAccountService>(); builder.Services.AddScoped<AuthService>();
@@ -90,6 +92,7 @@ public class GoogleLoginHttpTests
                 if (origins.Length > 0) policy.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader().AllowCredentials();
             }));
             fixture.App = builder.Build();
+            if (render) fixture.App.UseForwardedHeaders();
             fixture.App.UseMiddleware<ApiExceptionMiddleware>(); fixture.App.UseRouting(); fixture.App.UseCors();
             fixture.App.UseAuthentication(); fixture.App.UseAuthorization(); fixture.App.UseRateLimiter(); fixture.App.MapControllers();
             fixture.App.MapGet("/test/google-jwt", (HttpContext context) => Results.Ok(new { userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier), role = context.User.FindFirstValue(ClaimTypes.Role) })).RequireAuthorization();
@@ -151,6 +154,25 @@ public class GoogleLoginHttpTests
         denied.Headers.Add("Origin", "http://localhost:3002"); denied.Headers.Add("Access-Control-Request-Method", "POST");
         using var deniedResponse = await f.Client.SendAsync(denied);
         Assert.False(deniedResponse.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
+    [Fact]
+    public async Task RenderHttpsProxyAllowsSecureCrossSiteGoogleCookieAndStillRejectsPlainHttp()
+    {
+        await using var fixture = await Fixture.CreateAsync(render: true);
+        using var plain = await fixture.Client.PostAsync("/api/auth/google/challenge", null);
+        Assert.Equal(HttpStatusCode.BadRequest, plain.StatusCode);
+        Assert.False(plain.Headers.Contains("Set-Cookie"));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/google/challenge");
+        request.Headers.Add("X-Forwarded-Proto", "https");
+        request.Headers.Add("X-Forwarded-For", "203.0.113.12");
+        using var response = await fixture.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var cookie = response.Headers.GetValues("Set-Cookie").Single();
+        Assert.Contains("samesite=none", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("; secure", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("true", response.Headers.GetValues("Access-Control-Allow-Credentials").Single());
     }
 
     [Fact]

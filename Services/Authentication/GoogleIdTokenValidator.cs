@@ -11,6 +11,7 @@ namespace VietVan.API.Services.Authentication;
 public sealed class GoogleSignInOptions
 {
     public string ClientId { get; set; } = "";
+    public SameSiteMode ChallengeCookieSameSite { get; set; } = SameSiteMode.Strict;
 }
 
 public sealed record GoogleIdentity(string Subject, string Email);

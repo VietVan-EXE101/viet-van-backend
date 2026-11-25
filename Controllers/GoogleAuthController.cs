@@ -21,9 +21,9 @@ public sealed class GoogleAuthController(GoogleChallengeStore challenges, IGoogl
     {
         HttpOnly = true,
         Secure = Request.IsHttps,
-        // http://localhost:3001 and http://localhost:5080 are same-site. Their
-        // different ports still require credentialed CORS, not SameSite=None.
-        SameSite = SameSiteMode.Strict,
+        // Strict works for same-site localhost. Cross-site HTTPS deployments may
+        // explicitly choose None; both POSTs still require credentialed CORS.
+        SameSite = options.Value.ChallengeCookieSameSite,
         Path = "/api/auth/google"
     };
 
@@ -36,6 +36,8 @@ public sealed class GoogleAuthController(GoogleChallengeStore challenges, IGoogl
     {
         if (string.IsNullOrWhiteSpace(options.Value.ClientId)) return StatusCode(503, new { message = "Google Sign-In chưa được cấu hình." });
         if (!Request.IsHttps && !environment.IsDevelopment()) return BadRequest(new { message = "Cần HTTPS." });
+        if (!Request.IsHttps && options.Value.ChallengeCookieSameSite == SameSiteMode.None)
+            return BadRequest(new { message = "Cookie Google SameSite=None cần HTTPS." });
         var challenge = challenges.Create();
         Response.Headers.CacheControl = "no-store";
         var cookieOptions = ChallengeCookieOptions();
@@ -47,6 +49,7 @@ public sealed class GoogleAuthController(GoogleChallengeStore challenges, IGoogl
     private async Task<GoogleIdentity?> IdentityAsync(GoogleTokenRequest request, CancellationToken ct)
     {
         if (!Request.IsHttps && !environment.IsDevelopment()) return null;
+        if (!Request.IsHttps && options.Value.ChallengeCookieSameSite == SameSiteMode.None) return null;
         var cookie = Request.Cookies[CookieName];
         Response.Cookies.Delete(CookieName, ChallengeCookieOptions());
         if (string.IsNullOrEmpty(cookie) || cookie.Length > 128) return null;

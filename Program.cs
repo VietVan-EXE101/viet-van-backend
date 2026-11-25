@@ -16,6 +16,7 @@ using System.Threading.RateLimiting;
 using VietVan.API.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using VietVan.API.Middlewares;
+using VietVan.API.Hosting;
 
 var setupAdmin = args.Contains("--setup-admin", StringComparer.OrdinalIgnoreCase);
 var testEmailIndex = Array.FindIndex(args, x => x.Equals("--test-email", StringComparison.OrdinalIgnoreCase));
@@ -25,6 +26,10 @@ var builder = WebApplication.CreateBuilder(args
     .Where((arg, index) => !arg.Equals("--setup-admin", StringComparison.OrdinalIgnoreCase)
         && index != testEmailIndex && (!testEmail || index != testEmailIndex + 1))
     .ToArray());
+var renderDeployment = DeploymentConfiguration.IsRender(builder.Configuration);
+if (renderDeployment) builder.Logging.ClearProviders().AddConsole();
+var listenUrl = DeploymentConfiguration.ListenUrl(builder.Configuration);
+if (listenUrl is not null) builder.WebHost.UseUrls(listenUrl);
 
 // Chỉ lệnh cục bộ được gọi tường minh mới thử gửi thư; không gửi khi khởi động API.
 if (testEmail)
@@ -66,8 +71,14 @@ if (testEmail)
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
+var sqlConnection = DeploymentConfiguration.SqlConnection(builder.Configuration, builder.Environment);
 builder.Services.AddDbContext<VietVanDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseSqlServer(sqlConnection));
+if (renderDeployment)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(DeploymentConfiguration.ConfigureRenderProxy);
+    builder.Services.AddHttpsRedirection(options => options.HttpsPort = 443);
+}
 builder.Services.AddScoped<WorkDeletionService>();
 builder.Services.Configure<SePayOptions>(builder.Configuration.GetSection("SePay"));
 builder.Services.AddScoped<EntitlementService>();
@@ -75,13 +86,24 @@ builder.Services.AddScoped<PaymentService>();
 builder.Services.AddHostedService<PaymentExpiryWorker>();
 builder.Services.AddScoped<IPaymentGateway,VietQrGateway>();
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
-builder.Services.Configure<GoogleSignInOptions>(builder.Configuration.GetSection("GoogleSignIn"));
+builder.Services.AddOptions<GoogleSignInOptions>().Bind(builder.Configuration.GetSection("GoogleSignIn"))
+    .Validate(options => options.ChallengeCookieSameSite is SameSiteMode.Strict or SameSiteMode.Lax or SameSiteMode.None,
+        "GoogleSignIn__ChallengeCookieSameSite phải là Strict, Lax hoặc None.").ValidateOnStart();
 builder.Services.AddSingleton<IConfigurationManager<OpenIdConnectConfiguration>>(_ =>
     new ConfigurationManager<OpenIdConnectConfiguration>("https://accounts.google.com/.well-known/openid-configuration",
         new OpenIdConnectConfigurationRetriever(), new HttpDocumentRetriever { RequireHttps = true }));
 builder.Services.AddScoped<IGoogleIdTokenValidator, GoogleIdTokenValidator>();
 builder.Services.Configure<SmtpEmailOptions>(builder.Configuration.GetSection("Email:Smtp"));
-builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
+builder.Services.Configure<ResendEmailOptions>(builder.Configuration.GetSection("Email:Resend"));
+var emailProvider = builder.Configuration["Email:Provider"] ?? (renderDeployment ? "Resend" : "Smtp");
+if (emailProvider.Equals("Resend", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddHttpClient<ResendEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(30))
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+    builder.Services.AddScoped<IEmailSender>(services => services.GetRequiredService<ResendEmailSender>());
+}
+else if (emailProvider.Equals("Smtp", StringComparison.OrdinalIgnoreCase)) builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
+else throw new InvalidOperationException("Email__Provider chỉ hỗ trợ Smtp hoặc Resend.");
 builder.Services.AddScoped<AccountVerificationService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<AccountSessionService>();
@@ -201,12 +223,23 @@ if (app.Environment.IsDevelopment())
         await AdminAccountSetup.ConfigureAsync(app.Services, adminPassword, resetPassword: false);
     }
 
+}
+
+if (renderDeployment)
+{
+    app.UseForwardedHeaders();
+    app.Logger.LogWarning("Render dùng filesystem tạm thời. Media upload cần storage bền vững trước khi sử dụng lâu dài; xem README. Không tự di chuyển hoặc xóa media hiện có.");
+    if (emailProvider.Equals("Smtp", StringComparison.OrdinalIgnoreCase))
+        app.Logger.LogWarning("Render Free chặn SMTP 25/465/587. Dùng Email__Provider=Resend để gửi qua HTTPS.");
+}
+if (app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Swagger:Enabled"))
+{
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-
 app.UseMiddleware<ApiExceptionMiddleware>();
-app.UseHttpsRedirection();
+// Render probes the internal HTTP port. Health must not redirect to external HTTPS.
+app.UseWhen(context => !context.Request.Path.Equals("/health", StringComparison.OrdinalIgnoreCase), branch => branch.UseHttpsRedirection());
 // Chỉ static HTML/CSS/JS công khai. Media được đưa ra ngoài wwwroot để kiểm tra VIP.
 app.Use(async (ctx, next) =>
 {
@@ -230,4 +263,5 @@ app.Use(async (context, next) => {
 app.UseAuthorization();
 app.UseRateLimiter();
 app.MapControllers();
+app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.Run();
