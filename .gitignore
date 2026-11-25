@@ -1,0 +1,16 @@
+# Build / IDE
+bin/
+obj/
+.vs/
+artifacts/
+TestResults/
+*.user
+*.suo
+# Secrets and local environment overrides
+.env
+.env.*
+appsettings.Production.json
+# Uploaded private media stays in private storage. Keep supplied demo only.
+PrivateMedia/drama-assets/*
+!PrivateMedia/drama-assets/demo/
+!PrivateMedia/drama-assets/demo/**

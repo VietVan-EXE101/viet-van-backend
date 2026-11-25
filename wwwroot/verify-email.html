@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Xác minh email · Việt Văn</title><style>body{font:16px system-ui;background:#0b1020;color:#f4f6fc;display:grid;place-items:center;min-height:100vh;margin:0}main{background:#172039;padding:2rem;border-radius:1rem;max-width:32rem}a{color:#eecb86}label,input,button{display:block;margin:.7rem 0}input,button{padding:.6rem;font:inherit}button{cursor:pointer}</style></head>
+<body><main><h1>Xác minh email</h1><p id="status" role="status">Đang xác minh...</p><form id="resend" hidden><label for="email">Địa chỉ email đã đăng ký</label><input id="email" type="email" required autocomplete="email"><button type="submit">Gửi lại email xác minh</button><p id="resend-status" role="status"></p></form><a href="/vip.html">Quay lại đăng nhập</a></main>
+<script>
+(async()=>{
+  const fragment=location.hash.slice(1); history.replaceState(null,'',location.pathname);
+  const status=document.getElementById('status'), form=document.getElementById('resend');
+  form.addEventListener('submit',async e=>{e.preventDefault();const button=form.querySelector('button'), result=document.getElementById('resend-status');button.disabled=true;result.textContent='Đang gửi yêu cầu...';try{const r=await fetch('/api/auth/resend-verification',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('email').value})});result.textContent=r.ok?'Nếu tài khoản cần xác minh, email hướng dẫn sẽ được gửi. Vui lòng kiểm tra hộp thư và thư rác.':'Không thể gửi yêu cầu lúc này. Vui lòng thử lại sau.'}catch{result.textContent='Không thể kết nối máy chủ. Vui lòng thử lại sau.'}finally{button.disabled=false}});
+  let token; try{token=decodeURIComponent(fragment)}catch{token=''}
+  if(!token){status.textContent='Liên kết không hợp lệ. Bạn có thể yêu cầu email mới.';form.hidden=false;return}
+  try{const r=await fetch('/api/auth/verify-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});if(r.ok){status.textContent='Xác minh email thành công. Bạn có thể đăng nhập.'}else if(r.status===400){status.textContent='Liên kết không hợp lệ, đã hết hạn hoặc đã được sử dụng. Bạn có thể yêu cầu email mới.';form.hidden=false}else{status.textContent='Xác minh thất bại. Vui lòng thử lại sau hoặc yêu cầu email mới.';form.hidden=false}}catch{status.textContent='Không thể kết nối máy chủ. Vui lòng thử lại sau.';form.hidden=false}
+})();
+</script></body></html>

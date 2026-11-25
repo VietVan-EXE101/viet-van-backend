@@ -1,0 +1,1 @@
+namespace VietVan.API.Settings; public class JwtSettings { public string Key {get;set;}=""; public string Issuer {get;set;}="VietVan.API"; public string Audience {get;set;}="VietVan.Client"; public int ExpiryMinutes {get;set;}=120; }

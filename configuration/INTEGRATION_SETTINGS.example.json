@@ -1,0 +1,26 @@
+{
+  "GoogleSignIn": {
+    "ClientId": "PASTE_GOOGLE_CLIENT_ID_HERE"
+  },
+  "Email": {
+    "VerificationBaseUrl": "https://api.example.com",
+    "PasswordResetUrl": "https://app.example.com/reset-password",
+    "Smtp": {
+      "Host": "smtp.gmail.com",
+      "Port": 587,
+      "UserName": "PASTE_GMAIL_ADDRESS",
+      "Password": "PASTE_GMAIL_APP_PASSWORD",
+      "FromAddress": "PASTE_GMAIL_ADDRESS"
+    }
+  },
+  "Cors": { "AllowedOrigins": ["https://app.example.com"] },
+  "Storage": { "RootPath": "PrivateMedia" },
+  "SePay": {
+    "BankId": "PASTE_BANK_ID",
+    "BankName": "PASTE_BANK_NAME",
+    "AccountNumber": "PASTE_BANK_ACCOUNT_NUMBER",
+    "AccountHolder": "PASTE_ACCOUNT_HOLDER",
+    "WebhookApiKey": "PASTE_SEPAY_WEBHOOK_KEY",
+    "OrderLifetimeMinutes": 15
+  }
+}
