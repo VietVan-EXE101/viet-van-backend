@@ -100,6 +100,24 @@ Các đoạn ví dụ tiếp theo dùng chung các hàm trên. API binary như v
 
 ## 3. Tài khoản: đăng ký, đăng nhập và Google
 
+### FE gọi API nhưng chưa nhận email (cập nhật 27/11/2026)
+
+FE gọi Backend tại `https://viet-van-backend.onrender.com`; Backend gọi dịch vụ email. Không đưa API key Resend vào FE. Luồng quên mật khẩu từ Render đã có bằng chứng provider chấp nhận và event Delivered cho email chủ tài khoản Resend; kết quả này không chứng minh email gửi được tới mọi người dùng.
+
+Nếu sender trên Render vẫn là `onboarding@resend.dev` và chưa có domain Verified, Resend chỉ cho gửi tới email chủ tài khoản Resend. Đổi sang email người dùng khác trong FE không vượt qua được giới hạn này. Để gửi cho người dùng thực: xác minh domain trong Resend, sau đó cấu hình `Email__Resend__FromAddress` trên Render bằng địa chỉ thuộc domain đó. Xem [giới hạn sender thử của Resend](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain).
+
+| Kết quả FE quan sát | Cách hiểu và bước tiếp theo |
+| --- | --- |
+| Register 200, `verificationEmailSent: false` | Tài khoản đã tạo nhưng lần gửi chưa thành công. Không đăng ký lại; kiểm tra log Backend/provider, dùng gửi lại sau khi xử lý nguyên nhân. |
+| Register 200, `verificationEmailSent: true` | Provider chấp nhận thư; kiểm tra Resend → Emails và Inbox/Spam, chưa phải xác nhận người dùng đã đọc thư. |
+| Resend-verification/forgot-password 200 | Thông báo chung, không đảm bảo có tài khoản đủ điều kiện hoặc thư được gửi. Đối chiếu log đúng endpoint và thời điểm. |
+| HTTP 400 | Xem `errors` trong response để sửa JSON/field/email/password. |
+| HTTP 401 trên API auth công khai | Kiểm tra FE có tự gắn JWT cũ/hết hạn không; dùng `auth: false` trong helper ở mục 2 cho các request này. |
+| HTTP 429 hoặc log Cooldown | Chờ ít nhất 60 giây trước khi gửi lại; không gửi liên tục tự động. |
+| Browser báo CORS/OPTIONS thất bại | Kiểm tra origin FE trong `Cors__AllowedOrigins__0` (hoặc index tiếp theo), không kèm path/trailing slash. Xác minh POST thực đã tới Backend; không suy ra thư đã gửi từ trạng thái giao diện. |
+
+Khi báo lỗi, gửi cho BE **Request URL, HTTP status, response JSON, thời điểm và email nhận có trùng chủ Resend không**. Không gửi Authorization header, API key, mật khẩu hoặc token xác minh/reset. Register/resend-verification dùng log `EmailSend...`/`EmailVerification...`; forgot-password dùng `PasswordResetEmail...`. Chưa có Network/log request của FE thực tế thì chưa kết luận nguyên nhân là FE, CORS hay giới hạn provider. Không sửa trạng thái xác minh trong database để vượt qua bước này.
+
 ### 3.1. Đăng ký và xác minh email
 
 ```javascript

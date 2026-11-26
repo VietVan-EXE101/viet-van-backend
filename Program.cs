@@ -22,6 +22,7 @@ var setupAdmin = args.Contains("--setup-admin", StringComparer.OrdinalIgnoreCase
 var checkDatabaseReadOnly = args.Contains("--check-db-readonly", StringComparer.OrdinalIgnoreCase);
 var checkPaymentDatabaseReadOnly = args.Contains("--check-payment-db-readonly", StringComparer.OrdinalIgnoreCase);
 var checkEmailConfiguration = args.Contains("--check-email-config", StringComparer.OrdinalIgnoreCase);
+var inspectVerification = args.FirstOrDefault(arg => arg.StartsWith("--inspect-verification-readonly=", StringComparison.OrdinalIgnoreCase));
 var migrateMedia = args.Contains("--migrate-media-to-r2", StringComparer.OrdinalIgnoreCase);
 var testR2 = args.Contains("--test-r2", StringComparer.OrdinalIgnoreCase);
 var auditMediaStorage = args.Contains("--audit-media-storage-readonly", StringComparer.OrdinalIgnoreCase);
@@ -37,6 +38,7 @@ var builder = WebApplication.CreateBuilder(args
         && !arg.Equals("--check-db-readonly", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--check-payment-db-readonly", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--check-email-config", StringComparison.OrdinalIgnoreCase)
+        && !arg.StartsWith("--inspect-verification-readonly=", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--migrate-media-to-r2", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--test-r2", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--audit-media-storage-readonly", StringComparison.OrdinalIgnoreCase)
@@ -50,6 +52,13 @@ var renderDeployment = DeploymentConfiguration.IsRender(builder.Configuration);
 if (renderDeployment) builder.Logging.ClearProviders().AddConsole();
 var listenUrl = DeploymentConfiguration.ListenUrl(builder.Configuration);
 if (listenUrl is not null) builder.WebHost.UseUrls(listenUrl);
+
+if (inspectVerification is not null)
+{
+    Environment.ExitCode = await EmailVerificationInspection.RunAsync(builder.Configuration, builder.Environment,
+        inspectVerification["--inspect-verification-readonly=".Length..], Console.Out);
+    return;
+}
 
 if (checkEmailConfiguration)
 {
