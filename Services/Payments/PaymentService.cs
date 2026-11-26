@@ -12,7 +12,9 @@ namespace VietVan.API.Services.Payments;
 public sealed class PaymentService(VietVanDbContext db, IPaymentGateway gateway,
     IOptions<SePayOptions> settings, EntitlementService entitlements)
 {
-    private readonly SePayOptions options = settings.Value;
+    // Chỉ nạp cấu hình SePay khi thực sự tạo/đọc đơn thanh toán.
+    // Constructor còn được dùng bởi API danh sách gói, không được chặn SELECT vì options thanh toán lỗi.
+    private SePayOptions options => settings.Value;
 
     public async Task<List<PackageDto>> PackagesAsync(bool admin = false)
     {

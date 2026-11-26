@@ -14,7 +14,8 @@ public interface IPaymentGateway
 
 public sealed class VietQrGateway(IOptions<SePayOptions> options) : IPaymentGateway
 {
-    private readonly SePayOptions config = options.Value;
+    // Chưa cần đọc/validate cấu hình ngân hàng khi DI chỉ khởi tạo service cho API danh sách gói.
+    private SePayOptions config => options.Value;
     public string Name => "SePay";
     public string BankName => config.BankName;
     public string AccountNumber => config.AccountNumber;

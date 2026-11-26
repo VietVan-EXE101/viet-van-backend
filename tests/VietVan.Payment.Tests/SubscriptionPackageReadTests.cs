@@ -4,6 +4,14 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using VietVan.API.Middlewares;
 using VietVan.API.Controllers;
 using VietVan.API.Data;
 using VietVan.API.DTOs.Payments;
@@ -70,5 +78,39 @@ public sealed class SubscriptionPackageReadTests
         await using var db = Context(new OfflineConnection { Failure = cause });
         var error = await Assert.ThrowsAsync<SubscriptionPackagesReadException>(() => Service(db).PackagesAsync());
         Assert.Same(cause, error.InnerException);
+    }
+
+    [Fact]
+    public async Task PublicHttpEndpointReadsPackagesEvenWhenSePayOptionsCannotBind()
+    {
+        var reader = new PackageReader(); await using var db = Context(new OfflineConnection(), reader);
+        var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        { ["SePay:OrderLifetimeMinutes"] = "invalid-integer-sentinel" });
+        builder.Services.AddControllers().AddApplicationPart(typeof(SubscriptionPackagesController).Assembly);
+        builder.Services.AddAuthorization();
+        builder.Services.AddSingleton(db);
+        builder.Services.Configure<SePayOptions>(builder.Configuration.GetSection("SePay"));
+        builder.Services.AddScoped<PaymentService>(); builder.Services.AddScoped<EntitlementService>();
+        builder.Services.AddScoped<IPaymentGateway, VietQrGateway>();
+        await using var app = builder.Build();
+        app.UseMiddleware<ApiExceptionMiddleware>(); app.UseAuthorization(); app.MapControllers();
+        await app.StartAsync();
+        try
+        {
+            var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+            using var client = new HttpClient { BaseAddress = new Uri(address) };
+            using var response = await client.GetAsync("/api/subscription-packages");
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("Imported PRO", await response.Content.ReadAsStringAsync());
+            Assert.NotNull(reader.Sql);
+            // Không giả lập options hợp lệ hoặc tắt validation để làm API đọc hoạt động.
+            using var scope = app.Services.CreateScope();
+            var paymentService = scope.ServiceProvider.GetRequiredService<PaymentService>();
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => paymentService.CreateOrderAsync(1, 1, "valid-test-key"));
+            Assert.Contains("SePay:OrderLifetimeMinutes", error.Message);
+        }
+        finally { await app.StopAsync(); }
     }
 }
