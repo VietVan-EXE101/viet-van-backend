@@ -9,6 +9,16 @@ public sealed class ResendEmailOptions
 {
     public string ApiKey { get; set; } = "";
     public string FromAddress { get; set; } = "";
+
+    public IReadOnlyList<string> InvalidKeys()
+    {
+        var invalid = new List<string>();
+        if (string.IsNullOrWhiteSpace(ApiKey) || ApiKey.Contains("REPLACE", StringComparison.OrdinalIgnoreCase) ||
+            ApiKey.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) || ApiKey.Any(char.IsWhiteSpace))
+            invalid.Add("Email:Resend:ApiKey");
+        if (!MailAddress.TryCreate(FromAddress, out _)) invalid.Add("Email:Resend:FromAddress");
+        return invalid;
+    }
 }
 
 /// <summary>HTTPS email transport for hosts that block SMTP, including Render Free.</summary>
@@ -19,8 +29,9 @@ public sealed class ResendEmailSender(HttpClient client, IOptions<ResendEmailOpt
     public async Task SendAsync(string recipient, string subject, string html, CancellationToken cancellationToken = default)
     {
         var config = settings.Value;
-        if (string.IsNullOrWhiteSpace(config.ApiKey) || !MailAddress.TryCreate(config.FromAddress, out _))
-            throw new InvalidOperationException("Cần cấu hình Email:Resend:ApiKey và Email:Resend:FromAddress hợp lệ.");
+        var invalid = config.InvalidKeys();
+        if (invalid.Count > 0)
+            throw new InvalidOperationException("Thiếu/sai cấu hình email HTTPS: " + string.Join(", ", invalid));
         if (!MailAddress.TryCreate(recipient, out _)) throw new ArgumentException("Địa chỉ nhận email không hợp lệ.");
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.resend.com/emails");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.ApiKey);

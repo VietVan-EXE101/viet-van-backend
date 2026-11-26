@@ -2,6 +2,12 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using VietVan.API.Controllers;
+using VietVan.API.Data;
+using VietVan.API.Entities;
 using VietVan.API.Hosting;
 using VietVan.API.Services.Implementations;
 using VietVan.API.Services.Storage;
@@ -31,6 +37,63 @@ public class MediaStorageDeploymentTests
             Assert.Equal("R2", provider.GetRequiredService<IOptions<StorageOptions>>().Value.Provider);
             Assert.IsType<R2FileStorageService>(scope.ServiceProvider.GetRequiredService<IFileStorageService>());
         }
+    }
+
+    [Fact]
+    public async Task NewContainersReadSameMediaAndPreserveDraftPublishedSnapshotsAndObjectKeys()
+    {
+        await using var fixture = await PlatformTestDatabase.CreateAsync();
+        var drama = new DramaProduction { Title = "Durable", IsPublished = true, Status = "PUBLISHED" };
+        fixture.Db.Add(drama); await fixture.Db.SaveChangesAsync();
+        var objects = new MemoryR2();
+        var assets = new[]
+        {
+            new DramaAsset { Kind = "Background", Title = DramaService.CoverAssetTitle, RelativePath = "free/thumbnails/cover.png", ContentType = "image/png" },
+            new DramaAsset { Kind = "Video", Title = "FREE_VIDEO", RelativePath = "free/videos/play.mp4", ContentType = "video/mp4" },
+            new DramaAsset { Kind = "Character", Title = "Actor", RelativePath = "pro/characters/actor.gif", ContentType = "image/gif" },
+            new DramaAsset { Kind = "Audio", Title = "Audio", RelativePath = "pro/audio/voice.mp3", ContentType = "audio/mpeg" }
+        };
+        foreach (var asset in assets)
+        {
+            asset.DramaProductionId = drama.Id; asset.SizeBytes = R2StorageTests.Gif.Length;
+            objects.Files.Add(asset.RelativePath, (R2StorageTests.Gif.ToArray(), asset.ContentType));
+        }
+        fixture.Db.AddRange(assets); await fixture.Db.SaveChangesAsync();
+        drama.FreeVideoAssetId = assets[1].Id;
+        var manifest = new DramaManifest { DramaProductionId = drama.Id, Revision = 5,
+            DraftJson = "{\"draft\":\"unchanged\"}", PublishedJson = "{\"published\":\"unchanged\"}" };
+        fixture.Db.Add(manifest); await fixture.Db.SaveChangesAsync();
+        var original = assets.Select(a => (a.Id, a.RelativePath, a.ContentType, a.SizeBytes)).ToArray();
+        for (var restart = 0; restart < 2; restart++)
+        {
+            // Each container has a fresh filesystem, DI provider and EF context. Cloud services persist.
+            using var media = new TestMediaDirectory(); media.Environment.EnvironmentName = "Production";
+            var services = new ServiceCollection(); services.AddLogging();
+            services.AddMediaStorage(new ConfigurationBuilder().AddInMemoryCollection(RenderSettings()).Build(), media.Environment);
+            services.AddSingleton<IR2ObjectClient>(objects);
+            using var provider = services.BuildServiceProvider(); using var scope = provider.CreateScope();
+            await using var db = new PlatformTestContext(new DbContextOptionsBuilder<VietVanDbContext>()
+                .UseSqlite(fixture.Db.Database.GetDbConnection()).Options);
+            var storage = scope.ServiceProvider.GetRequiredService<IFileStorageService>();
+            var controller = new AdminDramaMediaController(db, storage)
+            { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
+            foreach (var asset in assets)
+            {
+                var response = Assert.IsType<RedirectResult>(await controller.Get(drama.Id, asset.Id, default));
+                Assert.StartsWith("https://media.invalid/", response.Url);
+            }
+            var actual = await db.DramaAssets.AsNoTracking().OrderBy(a => a.Id).ToListAsync();
+            Assert.Equal(original, actual.Select(a => (a.Id, a.RelativePath, a.ContentType, a.SizeBytes)).ToArray());
+            var snapshot = await db.DramaManifests.AsNoTracking().SingleAsync();
+            Assert.Equal(5, snapshot.Revision); Assert.Equal(manifest.DraftJson, snapshot.DraftJson);
+            Assert.Equal(manifest.PublishedJson, snapshot.PublishedJson);
+            var production = await db.DramaProductions.AsNoTracking().SingleAsync();
+            Assert.True(production.IsPublished); Assert.Equal("PUBLISHED", production.Status);
+            Assert.Equal(assets[1].Id, production.FreeVideoAssetId);
+            Assert.False(db.ChangeTracker.HasChanges());
+        }
+        Assert.Equal(8, objects.Signs); Assert.Equal(0, objects.Puts); Assert.Equal(4, objects.Files.Count);
+        foreach (var file in objects.Files.Values) Assert.Equal(R2StorageTests.Gif, file.Bytes);
     }
 
     [Fact]

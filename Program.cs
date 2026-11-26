@@ -21,6 +21,7 @@ using VietVan.API.Hosting;
 var setupAdmin = args.Contains("--setup-admin", StringComparer.OrdinalIgnoreCase);
 var checkDatabaseReadOnly = args.Contains("--check-db-readonly", StringComparer.OrdinalIgnoreCase);
 var checkPaymentDatabaseReadOnly = args.Contains("--check-payment-db-readonly", StringComparer.OrdinalIgnoreCase);
+var checkEmailConfiguration = args.Contains("--check-email-config", StringComparer.OrdinalIgnoreCase);
 var migrateMedia = args.Contains("--migrate-media-to-r2", StringComparer.OrdinalIgnoreCase);
 var testR2 = args.Contains("--test-r2", StringComparer.OrdinalIgnoreCase);
 var auditMediaStorage = args.Contains("--audit-media-storage-readonly", StringComparer.OrdinalIgnoreCase);
@@ -35,6 +36,7 @@ var builder = WebApplication.CreateBuilder(args
     .Where((arg, index) => !arg.Equals("--setup-admin", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--check-db-readonly", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--check-payment-db-readonly", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--check-email-config", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--migrate-media-to-r2", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--test-r2", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--audit-media-storage-readonly", StringComparison.OrdinalIgnoreCase)
@@ -48,6 +50,12 @@ var renderDeployment = DeploymentConfiguration.IsRender(builder.Configuration);
 if (renderDeployment) builder.Logging.ClearProviders().AddConsole();
 var listenUrl = DeploymentConfiguration.ListenUrl(builder.Configuration);
 if (listenUrl is not null) builder.WebHost.UseUrls(listenUrl);
+
+if (checkEmailConfiguration)
+{
+    Environment.ExitCode = await EmailDeliveryConfiguration.CheckAsync(builder.Configuration, builder.Environment, Console.Out);
+    return;
+}
 
 // Chỉ lệnh cục bộ được gọi tường minh mới thử gửi thư; không gửi khi khởi động API.
 if (testEmail)
@@ -64,23 +72,29 @@ if (testEmail)
         Environment.ExitCode = 1;
         return;
     }
-    var smtp = builder.Configuration.GetSection("Email:Smtp").Get<SmtpEmailOptions>() ?? new SmtpEmailOptions();
-    var invalid = smtp.InvalidKeys();
-    if (invalid.Count > 0)
-    {
-        Console.Error.WriteLine("Thiếu hoặc sai cấu hình: " + string.Join(", ", invalid));
-        Environment.ExitCode = 1;
-        return;
-    }
     try
     {
-        var sender = new SmtpEmailSender(Microsoft.Extensions.Options.Options.Create(smtp));
-        await sender.SendAsync(testRecipient!, "Kiểm tra email Việt Văn", "<p>Đây là email kiểm tra cấu hình SMTP Việt Văn.</p>");
-        Console.WriteLine("SMTP đã chấp nhận email thử; hãy kiểm tra hộp thư và thư rác.");
+        var provider = EmailDeliveryConfiguration.Provider(builder.Configuration);
+        var smtp = builder.Configuration.GetSection("Email:Smtp").Get<SmtpEmailOptions>() ?? new();
+        var resend = builder.Configuration.GetSection("Email:Resend").Get<ResendEmailOptions>() ?? new();
+        var invalid = provider == "Resend" ? resend.InvalidKeys() : smtp.InvalidKeys();
+        if (invalid.Count > 0)
+        {
+            Console.Error.WriteLine("Thiếu hoặc sai cấu hình: " + string.Join(", ", invalid));
+            Environment.ExitCode = 1;
+            return;
+        }
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
+        IEmailSender sender = provider == "Resend"
+            ? new ResendEmailSender(http, Microsoft.Extensions.Options.Options.Create(resend))
+            : new SmtpEmailSender(Microsoft.Extensions.Options.Options.Create(smtp));
+        await sender.SendAsync(testRecipient!, "Kiểm tra email Việt Văn", "<p>Đây là email kiểm tra cấu hình gửi thư Việt Văn.</p>");
+        Console.WriteLine($"Provider={provider} đã chấp nhận email thử; hãy kiểm tra hộp thư và thư rác. Không sửa database/media.");
     }
     catch (Exception ex)
     {
         var status = ex is System.Net.Mail.SmtpException smtpException ? $", mã SMTP {smtpException.StatusCode}" : "";
+        if (ex is HttpRequestException http && http.StatusCode.HasValue) status = $", HTTP {(int)http.StatusCode.Value}";
         Console.Error.WriteLine($"Không gửi được email: {ex.GetType().Name}{status}.");
         Environment.ExitCode = 1;
     }
@@ -154,7 +168,7 @@ builder.Services.AddSingleton<IConfigurationManager<OpenIdConnectConfiguration>>
 builder.Services.AddScoped<IGoogleIdTokenValidator, GoogleIdTokenValidator>();
 builder.Services.Configure<SmtpEmailOptions>(builder.Configuration.GetSection("Email:Smtp"));
 builder.Services.Configure<ResendEmailOptions>(builder.Configuration.GetSection("Email:Resend"));
-var emailProvider = builder.Configuration["Email:Provider"] ?? (renderDeployment ? "Resend" : "Smtp");
+var emailProvider = EmailDeliveryConfiguration.Provider(builder.Configuration);
 if (emailProvider.Equals("Resend", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddHttpClient<ResendEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(30))
@@ -249,6 +263,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+// Email configuration failures are reported without taking media/API storage offline.
+EmailDeliveryConfiguration.LogStatus(builder.Configuration, builder.Environment, app.Logger);
 
 // An explicit local command, never executed by normal API startup or an HTTP endpoint.
 if (setupAdmin)

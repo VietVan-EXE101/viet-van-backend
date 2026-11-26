@@ -343,7 +343,38 @@ Tự cấu hình tài khoản Resend theo hạn mức miễn phí hiện hành, 
 
 Đặt `Email__VerificationBaseUrl` là URL HTTPS của BE vì trang `/verify-email.html` đã có sẵn trong source. Không sửa trang FE. Đăng ký vẫn trả trạng thái `verificationEmailSent` hiện có; provider từ chối thì không báo gửi thành công. Forgot-password vẫn trả thông báo chung tránh lộ tài khoản; 200 không có nghĩa thư đã tới Gmail. Token, expiry, nonce, password rules và cơ chế thu hồi JWT giữ nguyên. Kiểm tra Inbox/Spam và log trạng thái chấp nhận/lỗi; không ghi token/email body vào log.
 
-Local vẫn mặc định SMTP với `Email:Smtp` trong User Secrets. Các biến SMTP tùy chọn đã có chú thích ở `.env.example`; không đưa Gmail App Password vào Git. Lệnh `--test-email` hiện có vẫn là bài kiểm tra SMTP dành cho Development, không phải bài test Resend.
+Local vẫn mặc định SMTP với `Email:Smtp` trong User Secrets. Các biến SMTP tùy chọn đã có chú thích ở `.env.example`; không đưa Gmail App Password vào Git. `--test-email YOUR_OWN_EMAIL` chỉ chạy trong Development, dùng đúng `Email:Provider` đã chọn (SMTP hoặc Resend), không sửa database/media; chỉ chạy khi thực sự muốn gửi một thư thử.
+
+**Chẩn đoán ngày 26/11/2026:** người vận hành xác nhận Render chưa có `Email__Provider`, `Email__Resend__ApiKey`, `Email__Resend__FromAddress`, chỉ có hai biến GoogleSignIn. Docker mặc định chọn Resend nhưng không cung cấp API key hoặc địa chỉ gửi; đây là cấu hình thiếu đã xác nhận. Google OAuth Client ID không phải khóa gửi thư. Người dùng đã đính chính: **chưa có tài khoản Resend và chưa có domain gửi**; cần tạo tài khoản/lấy key trước khi cấu hình Render. Chưa kiểm chứng gửi Gmail thật.
+
+Trong Render → service `viet-van-backend` → Environment, thêm đúng tên sau; giữ nguyên tất cả biến R2, SQL, JWT, Google và SePay:
+
+| Key | Value |
+| --- | --- |
+| `Email__Provider` | `Resend` |
+| `Email__Resend__ApiKey` | API key từ Resend → API Keys, có quyền gửi thư; nhập trực tiếp vào Render, không đưa vào chat/Git |
+| `Email__Resend__FromAddress` | Khi chưa có domain: `onboarding@resend.dev`, **chỉ thử tới địa chỉ email chủ tài khoản Resend** |
+| `Email__VerificationBaseUrl` | `https://viet-van-backend.onrender.com` |
+
+Muốn gửi tới Gmail của người dùng khác: Resend → Domains → thêm domain bạn có quyền DNS → tạo đúng các bản ghi Resend yêu cầu → đợi Verified → đổi `Email__Resend__FromAddress` sang địa chỉ thuộc domain đó. Không tự mua domain/tạo dịch vụ trả phí. Chưa có domain thì không thể khẳng định luồng gửi thư cho mọi người dùng đã hoạt động; không dùng Client ID Google hoặc khóa R2 thay email key.
+
+Sau Save/redeploy, Render Logs sẽ có `Email delivery configured Provider=Resend ConfigurationReady=True InvalidKeys=none`. Nếu thiếu biến, log chỉ in tên biến. Dùng sender thử sẽ có thêm `TEST_SENDER_RESTRICTION`. Đây chỉ là kiểm tra cấu hình, chưa chứng minh thư được chấp nhận hoặc tới Inbox. Chờ ít nhất một phút giữa các lần gửi lại, gọi `POST /api/auth/resend-verification` với email đã đăng ký, rồi xem `EmailSendAcceptedByProvider` hoặc `EmailSendFailed ... HttpStatus=...` và Resend → Emails. Response 200 chung của resend tránh lộ tài khoản, không phải cam kết gửi thành công. `EmailVerificationSkipped` ghi rõ Cooldown/AlreadyVerified/AccountLocked/AuthStateMissing vào log nội bộ.
+
+HTTP 401 từ Resend: kiểm tra API key; 403: kiểm tra quyền key, domain hoặc giới hạn địa chỉ nhận thử; 429: kiểm tra rate limit/hạn mức trong Resend. Không log/chép email body, token, provider body hoặc API key để chẩn đoán. Tham khảo [mã lỗi Resend](https://resend.com/docs/api-reference/errors).
+
+Kiểm tra cấu hình cục bộ, không gửi email hoặc truy cập database/R2:
+
+```powershell
+dotnet run --launch-profile http -- --check-email-config
+```
+
+Kết quả local chỉ phản ánh cấu hình local/User Secrets/env của tiến trình đó, không đọc được biến trong Render. Kiểm tra schema đầy đủ `--check-db-readonly` hiện có thêm `dbo.EmailVerificationTokens`; lệnh này chỉ SELECT TOP (0), không tự nâng cấp schema hoặc seed.
+
+Kiểm thử lượt sửa này: **277/277 test đạt**, gồm cấu hình chỉ có Google không đủ gửi mail, không lộ secret/status provider, token một lần/hết hạn, quyền media PRO/Admin, upload R2 và mô phỏng hai container có filesystem/DI/DbContext mới dùng cùng database/object store. Snapshot draft/published, revision, asset ID/key/byte và liên kết video giữ nguyên trong test. Báo cáo `tests/VietVan.Payment.Tests/TestResults/email-media-redeploy-regression.trx`. Chưa kiểm chứng domain/key/gửi Gmail thật hoặc redeploy Render thật; agent không sửa database, media, biến Render hay push code.
+
+Publish Release đạt tại `artifacts/email-media-redeploy-publish`. `scripts/Test-RenderHosting.ps1` đạt trên bản publish Production local: `/health`, Swagger, proxy HTTPS/CORS, challenge cookie và từ chối token Google/API key SePay không hợp lệ. Dùng SQL hostname `.invalid`, R2/key giả; không kiểm tra cloud thật hoặc gửi mail. Log startup xác minh email thiếu cấu hình vẫn cho API/Storage R2 khởi động, không fallback Local. Lệnh `--check-email-config` trên máy hiện tại trả SMTP/local cấu hình hợp lệ; đây không phải cấu hình Render.
+
+File thay đổi lượt này: `Program.cs`, `Hosting/DatabaseReadOnlyCheck.cs`, `Services/Authentication/EmailDeliveryConfiguration.cs`, `Services/Authentication/AccountVerificationService.cs`, `Services/Authentication/ResendEmailSender.cs`, hai test `EmailDeliveryConfigurationTests.cs`/`MediaStorageDeploymentTests.cs`, `.env.example`, README này và `MEDIA_STORAGE_OPERATIONS_VI.md`. Không thay storage implementation, entity/model kịch, migration, Dockerfile, Auth token rules hoặc API contract.
 
 ### 5. Google Login, CORS và HTTPS
 

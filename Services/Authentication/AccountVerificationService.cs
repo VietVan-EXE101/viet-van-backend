@@ -10,12 +10,7 @@ public sealed class AccountVerificationService(VietVanDbContext db, IEmailSender
 {
     private string VerificationUrl(string token)
     {
-        var configured = configuration["Email:VerificationBaseUrl"];
-        if (string.IsNullOrWhiteSpace(configured) && environment.IsDevelopment()) configured = "http://localhost:5080";
-        if (!Uri.TryCreate(configured, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttps && !(environment.IsDevelopment() && uri.IsLoopback && uri.Scheme == Uri.UriSchemeHttp)) ||
-            !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
-            throw new InvalidOperationException("Cần cấu hình Email:VerificationBaseUrl an toàn.");
+        var uri = EmailDeliveryConfiguration.VerificationBaseUri(configuration, environment);
         return uri.AbsoluteUri.TrimEnd('/') + "/verify-email.html#" + Uri.EscapeDataString(token);
     }
 
@@ -23,7 +18,13 @@ public sealed class AccountVerificationService(VietVanDbContext db, IEmailSender
     {
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == userId, ct);
         var state = await db.UserAuthStates.AsNoTracking().SingleOrDefaultAsync(x => x.UserId == userId, ct);
-        if (user is null || state is null || state.EmailVerified || state.IsLocked) return false;
+        if (user is null || state is null || state.EmailVerified || state.IsLocked)
+        {
+            // Internal reason only; public resend response remains identical for all accounts.
+            logger.LogInformation("EmailVerificationSkipped UserId={UserId} Reason={Reason}", userId,
+                user is null ? "AccountMissing" : state is null ? "AuthStateMissing" : state.EmailVerified ? "AlreadyVerified" : "AccountLocked");
+            return false;
+        }
         logger.LogInformation("EmailVerificationRequested UserId={UserId}", userId);
         var raw = EmailVerificationToken.Create();
         string url;
@@ -34,7 +35,11 @@ public sealed class AccountVerificationService(VietVanDbContext db, IEmailSender
         {
             var resource = $"email-verify:{userId}";
             await db.Database.ExecuteSqlInterpolatedAsync($"DECLARE @r int; EXEC @r = sp_getapplock @Resource={resource}, @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=10000; IF @r < 0 THROW 51000, 'Verification lock timeout', 1;", ct);
-            if (await db.EmailVerificationTokens.AnyAsync(x => x.UserId == userId && x.CreatedAt > now.AddMinutes(-1), ct)) return false;
+            if (await db.EmailVerificationTokens.AnyAsync(x => x.UserId == userId && x.CreatedAt > now.AddMinutes(-1), ct))
+            {
+                logger.LogInformation("EmailVerificationSkipped UserId={UserId} Reason=Cooldown", userId);
+                return false;
+            }
             // Chỉ dọn token của tài khoản này sau khi đã hết hạn hơn bảy ngày.
             await db.EmailVerificationTokens.Where(x => x.UserId == userId && x.ExpiresAt < now.AddDays(-7))
                 .ExecuteDeleteAsync(ct);
@@ -59,7 +64,9 @@ public sealed class AccountVerificationService(VietVanDbContext db, IEmailSender
         {
             // Không ghi token, nội dung email hay chi tiết provider có thể chứa dữ liệu nhạy cảm.
             var smtpStatus = ex is System.Net.Mail.SmtpException smtp ? smtp.StatusCode.ToString() : null;
-            logger.LogWarning("EmailSendFailed UserId={UserId} ErrorType={ErrorType} SmtpStatus={SmtpStatus}", userId, ex.GetType().Name, smtpStatus);
+            var httpStatus = ex is HttpRequestException http ? (int?)http.StatusCode : null;
+            logger.LogWarning("EmailSendFailed UserId={UserId} Sender={Sender} ErrorType={ErrorType} HttpStatus={HttpStatus} SmtpStatus={SmtpStatus}",
+                userId, sender.GetType().Name, ex.GetType().Name, httpStatus, smtpStatus);
             return false;
         }
     }

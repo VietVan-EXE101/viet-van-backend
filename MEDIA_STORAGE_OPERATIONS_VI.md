@@ -1,5 +1,19 @@
 # Vận hành media kịch
 
+## Kiểm tra bảo toàn dữ liệu khi sửa gửi email (26/11/2026)
+
+Lượt sửa email không thay Dockerfile, Storage__Provider, tên biến R2, connection string, object key, entity kịch, ID/revision/manifest hoặc dữ liệu thật. Render vẫn mặc định R2, từ chối cấu hình Local và không fallback khi R2 lỗi. Startup không chạy migrate/seed/media recovery; công cụ --apply chỉ chạy khi người vận hành gọi tường minh. Không xóa hoặc tạo lại bucket/kịch/asset để sửa email.
+
+Test mới `NewContainersReadSameMediaAndPreserveDraftPublishedSnapshotsAndObjectKeys` tạo hai filesystem/DI provider/DbContext độc lập dùng cùng database SQLite và object store giả lập: cả bìa, video, GIF và audio tiếp tục nhận URL mới; ID/key/byte, trạng thái publish, liên kết FREE video, revision 5 và draft/published JSON giữ nguyên. Test cùng các test phân quyền PRO/Admin và upload hiện có thuộc **277/277 test đạt**, báo cáo `tests/VietVan.Payment.Tests/TestResults/email-media-redeploy-regression.trx`. Đây là kiểm thử offline, không thay thế kiểm chứng Render/R2 thật. Chưa có report planner mới hoặc audit cloud mới để xác nhận 78 key thiếu trước đó đã được phục hồi.
+
+Để đối chiếu trước/sau redeploy mà không sửa dữ liệu, chạy lệnh sau trên tiến trình có cấu hình **cùng database và bucket với Render** rồi lưu output bên ngoài container tạm thời:
+
+```powershell
+dotnet run --launch-profile http -- --audit-media-storage-readonly
+```
+
+Khi không có ai chỉnh kịch ở giữa hai lần, `DatabaseTargetRef`, `MetadataFingerprint` và các số matched/missing/mismatched phải giữ nguyên. Fingerprint đổi có thể do chỉnh kịch hợp lệ hoặc đổi database; cần đối chiếu, không reset dữ liệu. Sau deploy phải thấy `Provider=R2 BucketName=vietvan-media` trong log Render và thử route media API bằng quyền tương ứng; không dùng lại signed URL đã hết hạn. Lệnh audit chỉ SELECT/HEAD, không PUT/DELETE/UPDATE. File thiếu từ trước vẫn cần xác minh nguồn/key riêng, không phải chạy lại seed hoặc upload lại toàn bộ.
+
 ## Lỗi sau Render redeploy: kết quả kiểm tra ngày 26/11/2026
 
 **Nguyên nhân đã tái hiện trong source, chưa xác nhận là nguyên nhân duy nhất của Production:** trước bản sửa, `StorageOptions.Provider` mặc định `Local`; `AddMediaStorage` chỉ chọn R2 khi `Storage:Provider=R2`, còn Dockerfile không đặt provider. Nhập đủ 5 biến `R2__...` không tự chọn R2. Test mới dùng đúng cấu hình này đã thất bại với `Expected: R2; Actual: Local` trước khi sửa. Nhánh Local tìm file trong filesystem container thay vì đọc bucket, nên không tìm thấy media trên R2 sau khi container được thay thế. Trên máy Development, cấu hình Local JSON có thể chọn R2 nhưng file này không được publish sang Render; vì vậy kết quả local không chứng minh provider trên Render.

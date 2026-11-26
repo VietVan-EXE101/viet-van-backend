@@ -51,6 +51,7 @@ public static class DatabaseReadOnlyCheck
             passed &= await CheckTableAsync<PaymentWebhookEvent>(db, connection, output, timeout.Token);
             if (!paymentsOnly)
             {
+                passed &= await CheckTableAsync<EmailVerificationRecord>(db, connection, output, timeout.Token);
                 passed &= await CheckTableAsync<DramaProduction>(db, connection, output, timeout.Token);
                 passed &= await CheckTableAsync<DramaAsset>(db, connection, output, timeout.Token);
                 passed &= await CheckTableAsync<DramaScene>(db, connection, output, timeout.Token);
