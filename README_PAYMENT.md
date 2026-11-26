@@ -4,6 +4,47 @@
 
 ## Phạm vi và kết luận kiểm tra source
 
+### POST /api/payments/orders trả DATABASE_UPGRADE_REQUIRED (26/11/2026)
+
+Request packageId=2 với trace `0HNQBJCDCGLTT:00000001` trả 503 `DATABASE_UPGRADE_REQUIRED`. Source middleware chỉ gán code này khi tìm thấy SQL error 207 (thiếu cột) hoặc 208 (thiếu bảng/object). Đây là lỗi schema trong database đang kết nối; chưa thể xác định tên bảng/cột chỉ từ response. Không quy lỗi cho FE, QR hoặc packageId theo phỏng đoán. Chưa xác nhận trực tiếp Render database/schema, chưa có chi tiết provider từ log trace này.
+
+Đã bổ sung PaymentOrders, PaymentAuditLogs, PaymentBankTransactions, PaymentWebhookEvents vào `--check-db-readonly`; trước đó lệnh chưa bao gồm 4 bảng này. Có thể dùng lệnh riêng để kiểm tra Payment và các bảng user/package/subscription phụ thuộc:
+
+```powershell
+dotnet run --launch-profile http -- --check-payment-db-readonly
+```
+
+Lệnh thoát trước khi khởi động Web Service/expiry worker. Chỉ đọc tên cột bằng SELECT TOP (0) rồi kiểm tra projection EF, không đọc hàng giao dịch, tạo order, migration, seed, UPDATE/INSERT/DELETE hoặc gọi SePay. Output in tên database và từng bảng/cột thiếu từ model; không in Connection String, password hoặc message provider. Nếu tên database khác mục tiêu Render thì không áp dụng kết luận vào Production trước khi đối chiếu cấu hình. SELECT pass không thay thế kiểm tra constraints, indexes, quyền ghi và webhook thực tế.
+
+API CreateOrder đọc PaymentOrders đầy đủ trước khi kiểm tra gói và ghi PaymentOrders/PaymentAuditLogs sau đó. Người dùng đã chạy lệnh thành công trên Somee `VietVan_New`, SQL Server 15.0.2000.5, compatibility 150: Users, UserAuthStates, UserSubscriptions và SubscriptionPackages đều PASS. Bốn bảng Payment thiếu 14 cột dưới đây, gồm cả `PaymentOrders.BillingPeriodSnapshot` mà script PaymentUpgrade lịch sử không tạo. Đây là kết quả schema thực do người vận hành cung cấp, chưa có đối chiếu trực tiếp Connection String Render hoặc exception tên cột của trace trên.
+
+| Bảng | Cột thiếu đã xác nhận |
+| --- | --- |
+| PaymentOrders | Amount, BillingPeriodSnapshot, Currency, DurationDaysSnapshot, PackageNameSnapshot, ReviewReason, TierLevelSnapshot |
+| PaymentAuditLogs | Detail |
+| PaymentBankTransactions | AccountNumberMasked, ClaimedOrderCode, Currency, ReviewReason |
+| PaymentWebhookEvents | Outcome, PayloadHash |
+
+Đã tạo [scripts/Upgrade_Somee_PaymentColumns.sql](scripts/Upgrade_Somee_PaymentColumns.sql), chỉ dành cho database `VietVan_New`. Các script lịch sử `PaymentUpgrade.sql`/`VerifyPaymentSchema.sql` còn có `USE VietVanDb`; không chạy nguyên văn, baseline hoặc tất cả migration lên Somee để chữa lỗi này.
+
+Trong SSMS kết nối Somee, chọn `VietVan_New`, mở file mới và chạy **toàn bộ script với `@ApplyChanges = 0` giữ nguyên**. Preview chỉ đọc dữ liệu ứng dụng (COUNT và metadata; các table variable chỉ dùng nội bộ session), không đọc/in giao dịch, số tài khoản, payload hoặc thay schema. Nó trả số dòng từng bảng, kế hoạch 14 cột, toàn bộ metadata cột và các `LEGACY INSERT BLOCKER`. Gửi các kết quả này trước khi áp dụng nếu có STOP/blocker.
+
+Ảnh SSMS người vận hành cung cấp ngày 26/11 xác nhận cả bốn bảng Payment đều có **0 hàng**, và có đúng bốn cột cũ NOT NULL mà EF không ghi trong PaymentOrders: `DurationInDays`, `PackageName`, `Price`, `TierLevel`. Lần apply cũ dừng với 51005 trước DDL. Chỉ thêm 14 cột mới sẽ chưa đủ: các cột cũ này tiếp tục chặn INSERT đơn hàng.
+
+Script cập nhật xử lý đúng bốn tên cột cũ này bằng `ALTER COLUMN ... NULL` **chỉ khi PaymentOrders còn trống**, giữ nguyên tên, kiểu built-in, độ dài, precision/scale, collation và các constraint hiện có. Không rename/drop cột, không thêm default giả. Các trường mới `Amount`, `PackageNameSnapshot`, `DurationDaysSnapshot`, `TierLevelSnapshot` vẫn NOT NULL đúng model và nhận giá trị thật từ PaymentService. Script không sửa Entity hoặc nghiệp vụ. Nếu kiểu cột cũ không nằm trong nhóm hỗ trợ, có cột chặn khác, có đơn hàng, hoặc dependency không cho ALTER thì dừng/rollback; không tự tháo constraint/index để ép chạy.
+
+Chế độ `@ApplyChanges = 1` chỉ thêm những cột còn thiếu khi thỏa điều kiện: các cột đích đã tồn tại phải khớp type/size/precision/scale/nullability, bảng có cột NOT NULL mới phải đang trống, và không còn cột legacy chặn INSERT ngoài bốn cột đã xử lý. Nếu có lịch sử hoặc blocker, script dừng trước DDL và cần mapping riêng dựa trên schema thật. Không đoán Amount/giá, thời hạn, tier, currency, webhook hash/outcome hoặc audit Detail; không lấy giá gói hiện tại để thay lịch sử.
+
+Trước apply cần sao lưu và dừng các tiến trình ghi thanh toán. **Mở lại file script đã cập nhật từ repository hoặc chép lại toàn bộ vào tab SSMS mới; tab SQLQuery cũ không tự cập nhật.** Chạy preview 0, xem kế hoạch 14 cột mới và bốn dòng `WILL MAKE OBSOLETE COLUMN NULLABLE`. Sau đó đổi `@ApplyChanges = 1` và chạy toàn bộ. Nếu schema vẫn như ảnh, kết quả dự kiến: `APPLIED`, `ColumnsAdded=14`, `LegacyColumnsMadeNullable=4` và số hàng bốn bảng vẫn 0; lần chạy lại đã hoàn tất có thể trả 0 thay vì 14/4.
+
+Script apply dùng transaction, giữ khóa bảng trong lúc kiểm tra/tạo cột, xác minh số hàng không đổi, rollback nếu lỗi; không thay dữ liệu/giá/trạng thái/ID. Không tự tạo index/constraint/trigger hay tự chạy khi startup. Preview/SELECT pass chưa chứng minh quyền ghi, constraints/indexes/triggers và webhook phù hợp. Sau khi apply thành công, chạy lại `--check-payment-db-readonly` rồi thử request tạo đơn với cùng Idempotency-Key; chỉ kết luận API đã sửa khi request thực tế thành công. Không cần push/redeploy riêng cho thay đổi schema nếu Render đã dùng cùng database/model.
+
+Lần apply tiếp theo người vận hành nhận SQL 102 gần `SQL_Latin1_General_CP1_CI_AS`; kiểm tra read-only sau đó vẫn thiếu 14 cột. Đã tái hiện bằng parser trên câu ALTER sinh ra: `COLLATE [SQL_Latin1_General_CP1_CI_AS]` không hợp lệ. Bản cũ dùng QUOTENAME cho collation; đây là lỗi script, không phải tên collation của Somee. Bản sửa giữ nguyên collation nhưng dùng tên không bọc ngoặc, kiểm tra tên từ metadata có trong `sys.fn_helpcollations()` và chỉ chứa chữ/số/gạch dưới. Tên cột vẫn dùng QUOTENAME. Lỗi dynamic SQL nằm trong TRY/CATCH và transaction nên rollback, cần mở lại file mới trong SSMS trước khi thử lại.
+
+Kiểm thử bản sửa collation: parser SQL Server 2019 đạt cho toàn bộ script, 12 biến thể ALTER COLUMN được sinh theo các nhóm kiểu dữ liệu hỗ trợ, và 14 câu ADD cột; kiểm tra riêng dynamic SQL bổ sung cho kiểm tra cú pháp script ngoài. **30/30 test schema/middleware/payment đạt** (`tests/VietVan.Payment.Tests/TestResults/somee-payment-collation-regression.trx`), gồm 14 định nghĩa cột khớp model, đủ 40 scalar column để phát hiện legacy INSERT blocker, chỉ cho phép đúng bốn cột cũ không thuộc EF trở thành nullable, giữ metadata, guard lịch sử/cột lạ trước DDL và kiểm tra collation không bị quote sai. Đây là test offline và parser, không phải integration test SQL Server. Agent chưa apply script cập nhật trên Somee hoặc kiểm tra tạo đơn thật trên Render.
+
+Có thể lấy chi tiết trực tiếp ở Render Logs bằng trace trên: gửi riêng dòng `Invalid column name ...` hoặc `Invalid object name ...` và SqlNumber; không cần gửi JWT hoặc Connection String. File sửa trong lượt chẩn đoán: `Hosting/DatabaseReadOnlyCheck.cs`, `Program.cs`, `tests/VietVan.Payment.Tests/PaymentSchemaDiagnosticsTests.cs`, tài liệu này. Không thay Entity, DTO, PaymentService, giá gói hoặc logic idempotency. 24 test về schema diagnostics/middleware/payment business đạt; dùng SQLite và dữ liệu giả lập, không tạo đơn Production hoặc chuyển tiền.
+
 Source hiện dùng PaymentOrders, PaymentBankTransactions, PaymentWebhookEvents và PaymentAuditLogs cho SePay. SubscriptionPackages/UserSubscriptions và lịch sử RevenueTransactions được giữ. Dashboard chỉ tính PaymentOrders Paid có giao dịch SePay Paid phù hợp tại PaidAt; không cộng thêm RevenueTransactions. Các mục bên dưới mô tả luồng thanh toán đã có; hướng dẫn migration mới và chuyển đổi nghiệp vụ nằm trong README_DRAMA.
 
 Build và test nghiệp vụ đã chạy bằng .NET; chưa xác minh SQL Server, SMTP, Google hoặc giao dịch SePay thật. Test thanh toán dùng SQLite và receipt giả lập bên trong test, không có endpoint giả lập trong API và không chuyển tiền thật. Việc đọc SQL Server ngoài sandbox bị từ chối; không thay đổi database trong phiên refactor này.

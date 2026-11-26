@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 namespace VietVan.API.Services.Storage;
 
 public sealed record RemoteObject(long Size, string ContentType, string? Sha256);
+public sealed record RemoteObjectEntry(string Key, long Size);
 
 public interface IR2ObjectClient
 {
@@ -54,6 +55,27 @@ public sealed class R2ObjectClient(IAmazonS3 s3, IOptions<R2Options> options) : 
             ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED,
             Timeout = TimeSpan.FromMinutes(5), MaxErrorRetry = 2
         });
+    }
+
+    // Operator recovery inventory only; normal API reads do not LIST the bucket.
+    public async Task<IReadOnlyList<RemoteObjectEntry>> ListAsync(CancellationToken ct)
+    {
+        try
+        {
+            var entries = new List<RemoteObjectEntry>();
+            string? token = null;
+            do
+            {
+                var page = await s3.ListObjectsV2Async(new ListObjectsV2Request
+                    { BucketName = bucket, ContinuationToken = token, MaxKeys = 1000 }, ct);
+                entries.AddRange((page.S3Objects ?? []).Select(item => new RemoteObjectEntry(item.Key, item.Size ?? 0)));
+                if (entries.Count > 10000) throw new InvalidOperationException("Inventory exceeds operator recovery limit.");
+                token = page.IsTruncated == true ? page.NextContinuationToken : null;
+                if (page.IsTruncated == true && string.IsNullOrEmpty(token)) throw new InvalidOperationException("Incomplete inventory page.");
+            } while (token is not null);
+            return entries;
+        }
+        catch (Exception ex) when (ex is AmazonServiceException or AmazonClientException or HttpRequestException) { throw Unavailable(ex); }
     }
 
     public async Task<RemoteObject?> HeadAsync(string key, CancellationToken ct)

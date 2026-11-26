@@ -57,7 +57,32 @@ Sau redeploy:
 
 **Kết quả test:** restore, build qua test, publish Release thành công. 252/252 test đạt, báo cáo `tests/VietVan.Payment.Tests/TestResults/media-redeploy-regression.trx`. Smoke test bản publish Production đạt PORT/health, Swagger, HTTPS proxy/CORS và các kiểm tra bảo vệ tích hợp hiện có; dùng database `.invalid` và R2 giả, không gửi email/thanh toán hoặc sửa database thật. Log xác nhận Provider=R2, bucket smoke. SDK cài trên máy là preview .NET 11 nhưng target app/test vẫn net8.0; Docker giữ SDK/runtime 8.0. Máy chưa có Docker CLI nên chưa chạy Docker build.
 
-**Giới hạn kiểm tra Production:** HTTP Render trong sandbox thất bại; yêu cầu kiểm tra ngoài sandbox bị từ chối. Sau đó người dùng đã chạy audit thành công tại Terminal: R2/bucket `vietvan-media`/database `VietVan_New`, với kết quả SELECT/HEAD nêu trên. Người dùng cũng đã phục hồi hai object #112/#114 bằng CLI, không sửa database. Agent chưa truy cập Render Environment/Logs, chưa có SHA deploy good/bad, chưa xác minh Render dùng cùng database/provider/bucket hoặc có fingerprint trước-sau, chưa thử phát/Range bằng quyền thật trên Render. Không tự push/deploy, đổi Connection String, xóa object hoặc sửa liên kết media. Cần log startup Render và bản gốc của 78 key còn thiếu để hoàn tất kiểm tra/khôi phục.
+**Giới hạn kiểm tra Production:** HTTP Render trong sandbox thất bại; yêu cầu kiểm tra ngoài sandbox bị từ chối. Sau đó người dùng đã chạy audit thành công tại Terminal: R2/bucket `vietvan-media`/database `VietVan_New`, với kết quả SELECT/HEAD nêu trên. Người dùng cũng đã phục hồi hai object #112/#114 bằng CLI, không sửa database. Ảnh Render Logs do người dùng cung cấp xác nhận `Provider=R2 BucketName=vietvan-media Environment=Production Render=True`; bản đang chạy đã chọn R2. Agent chưa truy cập trực tiếp Render Environment/Logs, chưa có SHA deploy good/bad, chưa xác minh Render dùng cùng database/fingerprint trước-sau, chưa thử phát/Range bằng quyền thật trên Render. Không tự push/deploy, đổi Connection String, xóa object hoặc sửa liên kết media. Cần đối chiếu những file người dùng xác nhận còn trên R2 dưới key khác trước khi khôi phục 78 liên kết thiếu.
+
+## Đối chiếu 78 key thiếu với toàn bộ object đang có trên R2
+
+Người dùng xác nhận các file vẫn còn trên R2. `MISSING` trong audit chỉ có nghĩa **key đang lưu trong database không tìm thấy object**; không chứng minh nội dung đó không có dưới key khác. Chưa có mapping đã xác minh cho 78 ID. Không yêu cầu upload lại 91 file cũ, không tự trỏ các ID mới sang file khác chỉ vì cùng dung lượng.
+
+Đã thêm lệnh dành cho người vận hành:
+
+```powershell
+dotnet run --launch-profile http -- --plan-missing-media-recovery
+```
+
+Lệnh LIST toàn bộ bucket (có phân trang), HEAD object, SELECT metadata gồm tên file gốc/size/MIME/key và video FREE đang cấu hình cho từng kịch. Nó đối chiếu cả key không nằm trong database, tìm bản sao cùng tên gốc/size/MIME ở các asset khác và những ứng viên chỉ khớp size/MIME. Đây chỉ là gợi ý kiểm tra nội dung; không tự áp dụng mapping, không đổi ID/key, không PUT/DELETE hoặc migration/seed. Không GET toàn bộ media và không in credential/signed URL.
+
+Output in đường dẫn `artifacts/media-recovery/plan-.../report.json` (ignored). Trong report:
+
+- `SAME_ORIGINAL_NAME_SIZE_MIME`: bản sao có cùng tên gốc, dung lượng và MIME; vẫn cần xác nhận đúng nội dung khi target không có hash gốc.
+- `SIZE_MIME_ONLY`: chưa đủ bằng chứng xác định cùng file; cần đối chiếu nội dung, không tự chọn ngay cả khi chỉ có một ứng viên.
+- `READY_LOCAL_EXACT_KEY`: tìm đúng file local tại chính key cần phục hồi, khớp size/MIME/signature; tạo batch plan có SHA256 để chạy bằng CLI recovery hiện có. Mỗi batch tối đa 20 asset cùng kịch. Chưa PUT cho đến khi người vận hành chạy recovery `--apply`.
+- `NEEDS_ORIGINAL_OR_CONFIRMED_COPY` không có candidate: cần tìm thêm object/backup hoặc xác nhận bản gốc, không tạo file giả.
+
+CLI phục hồi đã được mở rộng để nhận cả audio/video theo cùng giới hạn upload: ảnh 10 MiB, audio 30 MiB, video 200 MiB. Giữ kiểm tra đuôi/MIME/signature, SHA256, conditional PUT, không ghi đè và không sửa database. Hai ảnh #112/#114 đã phục hồi không cần chạy lại.
+
+Lần chạy planner trong sandbox dừng `NETWORK_ERROR` ở LIST, chưa đọc được inventory thật; yêu cầu chạy ngoài sandbox bị từ chối. Cần người vận hành chạy lệnh trên rồi cung cấp output/đường dẫn report để tiếp tục đối chiếu và lập mapping cụ thể. Không kết luận 78 file đã được phục hồi. Đã kiểm tra thêm `VietVan.API.zip`: chỉ có 4 media demo và 6 cover tác phẩm, không có tên file gốc của 78 key thiếu.
+
+Kiểm thử hiện tại: **259/259 test đạt**, báo cáo `tests/VietVan.Payment.Tests/TestResults/media-recovery-planner-regression.trx`. Bao gồm LIST có phân trang, lỗi inventory không lộ secret, tìm object ngoài DB, giữ ứng viên trùng size để xác nhận thay vì tự áp dụng, không ghi đè, kế hoạch local không ghi R2, phục hồi video/audio vào đúng key bằng byte giả lập. Chưa xác minh mapping/byte của 78 file thật trên cloud.
 
 - Với `Storage:Provider=Local`, file do Drama Studio tải lên nằm trong `PrivateMedia/drama-assets/`; với R2, `DramaAssets.RelativePath` là key trong bucket private. Xem cấu hình R2 và công cụ chuyển file cũ trong README. Sao lưu media cùng bản sao SQL Server nhất quán; không đưa thư mục private vào `wwwroot` hoặc public qua proxy.
 - File chỉ được xóa sau khi API đã kiểm tra tham chiếu cảnh, preview và hotspot. Upload lỗi hoặc bị hủy được dọn khi tiến trình còn hoạt động; sự cố mất điện/tiến trình có thể để lại file mồ côi.
@@ -108,7 +133,7 @@ dotnet run --launch-profile http -- --restore-missing-r2-media=artifacts/media-r
 dotnet run --launch-profile http -- --inspect-drama-media=25:112,114
 ```
 
-CLI phục hồi không kết nối database hoặc khởi động Web Service/worker. Nó kiểm tra tất cả file nguồn trước PUT: key đúng kịch, đuôi/MIME/chữ ký ảnh, giới hạn 10 MiB, dung lượng và SHA256 đã xác nhận. File nguồn được giữ khóa đọc đến khi xong. Chỉ tạo object thiếu với `If-None-Match: *`; object có sẵn phải khớp SHA256/size/MIME, nếu khác thì dừng, không ghi đè. Sau copy phải HEAD và đọc lại toàn bộ byte để xác minh SHA256. Không chuyển mã ảnh nên GIF giữ nguyên mọi frame. Không DELETE hoặc cập nhật ID/key trong database; cảnh và revision tiếp tục trỏ đúng tài nguyên.
+CLI phục hồi không kết nối database hoặc khởi động Web Service/worker. Nó kiểm tra tất cả file nguồn trước PUT: key đúng kịch, đuôi/MIME/chữ ký file, giới hạn ảnh 10 MiB/audio 30 MiB/video 200 MiB, dung lượng và SHA256 đã xác nhận. File nguồn được giữ khóa đọc đến khi xong. Chỉ tạo object thiếu với `If-None-Match: *`; object có sẵn phải khớp SHA256/size/MIME, nếu khác thì dừng, không ghi đè. Sau copy phải HEAD và đọc lại toàn bộ byte để xác minh SHA256. Không chuyển mã ảnh nên GIF giữ nguyên mọi frame. Không DELETE hoặc cập nhật ID/key trong database; cảnh và revision tiếp tục trỏ đúng tài nguyên.
 
 Hai object không được ghi theo một transaction: nếu mạng ngắt sau object đầu, file đã phục hồi được giữ lại. Có thể chạy lại cùng lệnh an toàn; object khớp không được PUT lần nữa. Khi thành công phải thấy `PASS asset=112`, `PASS asset=114` và `Recovery completed: verified=2`. Sau đó Admin thử lại hai route media trên Render và mở bản nháp #25. Nếu R2 đã khớp nhưng Render vẫn 404, kiểm tra `Storage__Provider=R2`, bucket và database trên Render; không tạo lại asset.
 

@@ -20,9 +20,11 @@ using VietVan.API.Hosting;
 
 var setupAdmin = args.Contains("--setup-admin", StringComparer.OrdinalIgnoreCase);
 var checkDatabaseReadOnly = args.Contains("--check-db-readonly", StringComparer.OrdinalIgnoreCase);
+var checkPaymentDatabaseReadOnly = args.Contains("--check-payment-db-readonly", StringComparer.OrdinalIgnoreCase);
 var migrateMedia = args.Contains("--migrate-media-to-r2", StringComparer.OrdinalIgnoreCase);
 var testR2 = args.Contains("--test-r2", StringComparer.OrdinalIgnoreCase);
 var auditMediaStorage = args.Contains("--audit-media-storage-readonly", StringComparer.OrdinalIgnoreCase);
+var planMediaRecovery = args.Contains("--plan-missing-media-recovery", StringComparer.OrdinalIgnoreCase);
 var inspectMedia = args.FirstOrDefault(arg => arg.StartsWith("--inspect-drama-media=", StringComparison.OrdinalIgnoreCase));
 var restoreMedia = args.FirstOrDefault(arg => arg.StartsWith("--restore-missing-r2-media=", StringComparison.OrdinalIgnoreCase));
 var applyMediaMigration = args.Contains("--apply", StringComparer.OrdinalIgnoreCase);
@@ -32,9 +34,11 @@ var testRecipient = testEmail && testEmailIndex + 1 < args.Length ? args[testEma
 var builder = WebApplication.CreateBuilder(args
     .Where((arg, index) => !arg.Equals("--setup-admin", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--check-db-readonly", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--check-payment-db-readonly", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--migrate-media-to-r2", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--test-r2", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--audit-media-storage-readonly", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--plan-missing-media-recovery", StringComparison.OrdinalIgnoreCase)
         && !arg.StartsWith("--inspect-drama-media=", StringComparison.OrdinalIgnoreCase)
         && !arg.StartsWith("--restore-missing-r2-media=", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--apply", StringComparison.OrdinalIgnoreCase)
@@ -83,6 +87,11 @@ if (testEmail)
     return;
 }
 
+if (planMediaRecovery)
+{
+    Environment.ExitCode = await MediaRecoveryPlanner.RunAsync(builder.Configuration, builder.Environment, Console.Out);
+    return;
+}
 if (auditMediaStorage)
 {
     Environment.ExitCode = await MediaStorageAudit.RunAsync(builder.Configuration, builder.Environment, Console.Out);
@@ -110,9 +119,10 @@ if (migrateMedia)
     Environment.ExitCode = await MediaMigration.RunAsync(builder.Configuration, builder.Environment, applyMediaMigration, Console.Out);
     return;
 }
-if (checkDatabaseReadOnly)
+if (checkDatabaseReadOnly || checkPaymentDatabaseReadOnly)
 {
-    Environment.ExitCode = await DatabaseReadOnlyCheck.RunAsync(builder.Configuration, builder.Environment, Console.Out);
+    Environment.ExitCode = await DatabaseReadOnlyCheck.RunAsync(builder.Configuration, builder.Environment, Console.Out,
+        paymentsOnly: checkPaymentDatabaseReadOnly);
     return;
 }
 

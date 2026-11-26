@@ -65,14 +65,15 @@ public static class DramaMediaRecovery
             foreach (var asset in plan.Assets)
             {
                 if (asset.AssetId <= 0 || string.IsNullOrEmpty(asset.Key) ||
-                    !Regex.IsMatch(asset.Key, $@"^drama-assets/{plan.DramaId}/[a-z]+/[a-f0-9]{{32}}\.(png|gif|jpg|jpeg|webp)$") ||
-                    R2Options.Key(asset.Key) != asset.Key || asset.SizeBytes is <= 0 or > 10 * 1024 * 1024 ||
+                    !Regex.IsMatch(asset.Key, $@"^drama-assets/{plan.DramaId}/[a-z]+/[a-f0-9]{{32}}\.[a-z0-9]{{2,5}}$") ||
+                    R2Options.Key(asset.Key) != asset.Key || asset.SizeBytes <= 0 ||
                     asset.Sha256 is null || !Regex.IsMatch(asset.Sha256, "^[a-fA-F0-9]{64}$"))
                     throw new ArgumentException("Invalid asset identity/key/size/hash.");
                 var path = InsideRoot(root, asset.SourceFile);
                 var ext = Path.GetExtension(asset.Key);
                 if (!Path.GetExtension(path).Equals(ext, StringComparison.OrdinalIgnoreCase) ||
-                    !DramaService.MediaTypes.TryGetValue(ext, out var type) || type.Mime != asset.ContentType)
+                    !DramaService.MediaTypes.TryGetValue(ext, out var type) || type.Mime != asset.ContentType ||
+                    asset.SizeBytes > DramaService.MaxSizeFor(type.Kind))
                     throw new ArgumentException("MIME/extension mismatch.");
                 var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                 locked.Add((asset, path, stream));

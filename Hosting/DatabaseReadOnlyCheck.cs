@@ -9,11 +9,15 @@ namespace VietVan.API.Hosting;
 public static class DatabaseReadOnlyCheck
 {
     // No WebApplication/hosted service is built: no expiry worker, seed or migrations.
-    public static async Task<int> RunAsync(IConfiguration configuration, IWebHostEnvironment environment, TextWriter output)
+    public static async Task<int> RunAsync(IConfiguration configuration, IWebHostEnvironment environment, TextWriter output,
+        bool paymentsOnly = false)
     {
         var stage = "configuration";
         try
         {
+            await output.WriteLineAsync(paymentsOnly
+                ? "READ-ONLY Payment schema: SELECT TOP (0) only; no order creation, worker, migration or seed."
+                : "READ-ONLY database schema: SELECT TOP (0) only; no worker, migration or seed.");
             var value = DeploymentConfiguration.SqlConnection(configuration, environment);
             await using var connection = new SqlConnection(value);
             SqlConnectionOpeningRetryInterceptor.Configure(connection);
@@ -36,19 +40,26 @@ public static class DatabaseReadOnlyCheck
             stage = "table schemas";
             var passed = true;
             // Keep inspecting later tables after a schema mismatch to report all blockers.
-            passed &= await CheckTableAsync<LiteraryWork>(db, connection, output, timeout.Token);
+            if (!paymentsOnly) passed &= await CheckTableAsync<LiteraryWork>(db, connection, output, timeout.Token);
             passed &= await CheckTableAsync<User>(db, connection, output, timeout.Token);
             passed &= await CheckTableAsync<UserAuthState>(db, connection, output, timeout.Token);
             passed &= await CheckTableAsync<UserSubscription>(db, connection, output, timeout.Token);
             passed &= await CheckTableAsync<SubscriptionPackage>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<DramaProduction>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<DramaAsset>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<DramaScene>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<DramaHotspot>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<DramaManifest>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<DramaViewing>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<CulturalInsightView>(db, connection, output, timeout.Token);
-            passed &= await CheckTableAsync<Review>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<PaymentOrder>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<PaymentAuditLog>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<PaymentBankTransaction>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<PaymentWebhookEvent>(db, connection, output, timeout.Token);
+            if (!paymentsOnly)
+            {
+                passed &= await CheckTableAsync<DramaProduction>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<DramaAsset>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<DramaScene>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<DramaHotspot>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<DramaManifest>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<DramaViewing>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<CulturalInsightView>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<Review>(db, connection, output, timeout.Token);
+            }
             if (!passed)
             {
                 await output.WriteLineAsync("Schema check failed. Review the listed tables/columns before planning an upgrade; no schema or data was changed.");
