@@ -33,6 +33,14 @@ public static class DeploymentConfiguration
         SqlConnectionStringBuilder sql;
         try { sql = new SqlConnectionStringBuilder(value); }
         catch (ArgumentException) { throw new InvalidOperationException("ConnectionStrings__DefaultConnection không đúng định dạng SQL Server."); }
+        if (sql.DataSource.Contains("\\.", StringComparison.Ordinal))
+            throw new InvalidOperationException("SQL Server address chứa dấu \\ trước dấu chấm. Hãy sao chép Connection string chính thức trong Somee > Database > Connection details.");
+        var somee = sql.DataSource.TrimEnd('.').EndsWith(".mssql.somee.com", StringComparison.OrdinalIgnoreCase) ||
+            sql.DataSource.Contains(".mssql.somee.com,", StringComparison.OrdinalIgnoreCase);
+        if (somee && (sql.IntegratedSecurity || string.IsNullOrWhiteSpace(sql.UserID) ||
+            string.IsNullOrWhiteSpace(sql.InitialCatalog) || string.IsNullOrWhiteSpace(sql.Password) ||
+            sql.Password.Contains("REPLACE_", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("Kết nối Somee cần SQL Authentication và mật khẩu thật. Dán Connection string chính thức vào ConnectionStrings:DefaultConnection trong appsettings.Local.json hoặc User Secrets; trên Render dùng ConnectionStrings__DefaultConnection.");
         if (!localDevelopment)
         {
             var server = sql.DataSource.Trim();
@@ -46,6 +54,17 @@ public static class DeploymentConfiguration
                 throw new InvalidOperationException("Production cần SQL Server từ xa, database và SQL username/password qua ConnectionStrings__DefaultConnection; không dùng localhost, named instance hoặc Windows Authentication.");
         }
         return value;
+    }
+
+    public static bool IsLocalSqlServer(string connectionString)
+    {
+        var source = new SqlConnectionStringBuilder(connectionString).DataSource.Trim();
+        if (source.StartsWith("tcp:", StringComparison.OrdinalIgnoreCase)) source = source[4..];
+        var host = source.Split('\\')[0].Split(',')[0].Trim().Trim('[', ']');
+        return host is "." or "(local)" || host.StartsWith("(localdb)", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase) ||
+            (System.Net.IPAddress.TryParse(host, out var ip) && System.Net.IPAddress.IsLoopback(ip));
     }
 
     public static void ConfigureRenderProxy(ForwardedHeadersOptions options)

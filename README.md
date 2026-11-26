@@ -1,6 +1,84 @@
 # viet-van-backend
 Backend API for Viet Van Platform
 
+## SQL Server Somee đã import dữ liệu
+
+Runtime chỉ dùng khóa **`ConnectionStrings:DefaultConnection`** qua `DeploymentConfiguration.SqlConnection()` trong `Program.cs`, được inject vào `VietVanDbContext`. DbContext không có `OnConfiguring` tự trỏ sang database khác; service nghiệp vụ dùng chung DbContext này. Không sửa Entity/DTO/Controller, migration hoặc dữ liệu để đổi host.
+
+### Dán Connection String ở đâu?
+
+Trên máy hiện tại, mở **`appsettings.Local.json`, dòng 3**, thay **toàn bộ giá trị** `ConnectionStrings.DefaultConnection` bằng Connection string chính thức trong Somee: **MS SQL → Databases → VietVan_New → Connection details → Connection string → Copy to clipboard**. Không chỉ thay riêng password nếu các tùy chọn khác trong chuỗi Somee khác mẫu. Xem [hướng dẫn chính thức Somee](https://www.somee.com/doka/Help/Article/103/MS_SQL_Database_connection_string).
+
+Mẫu đã điền theo thông tin được cung cấp, chưa có mật khẩu thật:
+
+```text
+Server=VietVan_New.mssql.somee.com;Database=VietVan_New;User Id=zinnkh0401_SQLLogin_1;Password=REPLACE_WITH_SOMEE_PASSWORD;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30
+```
+
+Đây là **mẫu**, chưa phải chuỗi đã sao chép từ tài khoản Somee. Giá trị chính thức trên dashboard là nguồn xác nhận hostname, login và tùy chọn TLS. Hostname dùng dấu chấm: `VietVan_New.mssql.somee.com`, không có `\` trước `.mssql`. Không dùng `Integrated Security=True` hoặc `Trusted_Connection=True`. Các keyword chính thức như `workstation id`, `packet size`, `user id`, `pwd`, `data source`, `initial catalog` được SqlClient hỗ trợ và không bị thay thế khi runtime đọc chuỗi.
+
+Giữ `Encrypt`/`TrustServerCertificate` theo cấu hình TLS chính thức của Somee; không tự đổi sang tắt mã hóa để bỏ qua lỗi kết nối. JSON yêu cầu escape dấu nháy kép/backslash nếu chúng xuất hiện trong giá trị. Không gửi mật khẩu/chuỗi thật vào chat hoặc commit vào Git.
+
+`appsettings.Local.json` đã bị Git/Docker/publish bỏ qua. Cấu hình database Windows cũ được giữ ở `ConnectionStrings.LocalBackupConnection` trong cùng file; **không tự động sử dụng key backup này** khi Somee lỗi. Database local không bị sửa/xóa. Muốn quay lại local, chủ động sao chép giá trị backup vào `DefaultConnection`, rồi restart. Không thay đổi kết nối khi API đang thực hiện transaction.
+
+Có thể dùng .NET User Secrets thay cho file local, qua Manage User Secrets của IDE. Thứ tự hiện tại: command line → Environment Variables → User Secrets (Development) → appsettings JSON → fallback `appsettings.Local.json` (chỉ Development). Vì vậy biến môi trường/secret `DefaultConnection` đã tồn tại sẽ ưu tiên hơn file local. Không nạp file local trong Production/Render, không tự fallback sang local nếu cloud báo lỗi.
+
+### Render
+
+Tên biến môi trường chính xác:
+
+```text
+ConnectionStrings__DefaultConnection
+```
+
+Value là toàn bộ chuỗi chính thức Somee trên **một dòng**, không thêm tên biến hoặc cặp dấu nháy bao ngoài như JSON. `.env.example` đã cập nhật mẫu Somee, không chứa mật khẩu thật. Dockerfile, Root Directory, PORT/health/HTTPS và JWT vẫn theo mục triển khai Render bên dưới.
+
+### Retry và bảo vệ database đã import
+
+Thêm `SqlConnectionOpeningRetryInterceptor` cho kết nối SQL do EF tạo: tối đa 3 lần mở kết nối (1 lần đầu + 2 retry), exponential backoff có giới hạn delay 5 giây cho lỗi transient mà SqlClient nhận diện. Provider này chỉ gắn vào **SqlConnection**, không gắn SqlCommand, không replay transaction/thanh toán. Không bật `EnableRetryOnFailure` EF toàn cục vì các service đang dùng nhiều transaction tường minh; xem [SqlClient connection retry](https://learn.microsoft.com/en-us/sql/connect/ado-net/configurable-retry-logic-sqlclient-introduction) và [EF execution strategies/transactions](https://learn.microsoft.com/en-us/ef/core/miscellaneous/connection-resiliency). Timeout mở kết nối áp dụng cho từng lần thử; lệnh kiểm tra chỉ đọc có timeout tổng 45 giây.
+
+Không bật sensitive data logging, không in chuỗi có mật khẩu. Lỗi hết retry vẫn giữ response 503 `DATABASE_UNAVAILABLE` hiện có. Auto-provision DevelopmentAdmin chỉ được phép với SQL local; không chạy trên Somee dù cấu hình DevelopmentAdmin bị bật nhầm. Không thêm EnsureCreated/EnsureDeleted/Migrate, bootstrap hoặc seed khi khởi động. Factory design-time còn connection local **design-only**, không được DI runtime sử dụng; không gọi EF database update/bootstrap trên cloud đã import.
+
+### Chạy và kiểm tra sau khi đã dán chuỗi thật
+
+```powershell
+dotnet restore VietVan.API.csproj
+dotnet build VietVan.API.csproj
+
+# Chỉ đọc; kết thúc sau khi kiểm tra, không khởi động Web Service/worker.
+dotnet run --launch-profile http -- --check-db-readonly
+
+# Khi kết quả kiểm tra đúng database/schema:
+dotnet run --launch-profile http
+```
+
+Lệnh `--check-db-readonly` chỉ chạy SELECT: tên database/SQL version/compatibility level và các projection `TOP (0)` của LiteraryWorks, Users, UserAuthStates, UserSubscriptions, SubscriptionPackages, DramaProductions, DramaAssets. Lệnh đối chiếu tên cột thực tế với model EF, in riêng `PASS`/`FAIL` cho từng bảng và tên cột còn thiếu; tiếp tục kiểm tra bảng sau khi một bảng lệch schema. Không đọc ra user record/password hash, không trả nội dung tác phẩm, không UPDATE/INSERT/DELETE, không seed/migration và không khởi động PaymentExpiryWorker. Mật khẩu placeholder/Windows Authentication Somee bị chặn trước khi kết nối. Lỗi cấu hình/schema chỉ in bước kiểm tra, tên bảng/cột, loại/mã lỗi phù hợp, không in chuỗi hoặc provider message chứa dữ liệu nhạy cảm. Kiểm tra này xác nhận bảng/cột và projection rỗng; không thay thế kiểm tra kiểu dữ liệu, dữ liệu thực tế, FK/index hoặc API nghiệp vụ.
+
+API giữ địa chỉ `http://localhost:5080`, Swagger `/swagger`, health `/health`. Sau khi kiểm tra SQL thành công, thử `GET /api/works?page=1&pageSize=10`, `GET /api/dramas` và `POST /api/auth/login` bằng tài khoản **đã có trong database import**. Không tạo/reset Admin để vượt lỗi login. Health 200 không chứng minh cloud database đúng schema. Khi chạy Web Service bình thường, PaymentExpiryWorker vẫn thực hiện nghiệp vụ hết hạn đơn hiện có; dùng lệnh kiểm tra riêng ở trên nếu chỉ muốn đọc.
+
+Kết quả lần cấu hình Somee: restore thành công từ cache, build Release 0 warning/0 error; **195/195 test đạt** ở lần cấu hình ban đầu (`somee-configuration.trx`), gồm env ưu tiên JSON, keyword Somee, chặn placeholder/Windows Auth, retry mở kết nối và hồi quy nghiệp vụ. Test project còn NU1900 do feed audit NuGet không truy cập được. Terminal người dùng đã xác nhận kết nối cloud thành công: database `VietVan_New`, SQL Server `15.0.2000.5`, compatibility level `150`; projection LiteraryWorks đạt. Kiểm tra cũ dừng ở nhóm login/subscription với InvalidOperationException; chưa đủ thông tin để chọn script nâng cấp. Đã bổ sung báo riêng từng bảng/cột thiếu; cần chạy lại `--check-db-readonly` và đối chiếu kết quả trước khi thay đổi schema. Chưa xác nhận API đọc/login trên cloud. Không có Docker CLI nên chưa build image Docker; Dockerfile không thay đổi. Publish và 5 kiểm tra HTTP cấu hình Render đạt bằng cấu hình kiểm thử, không dùng database Somee thật.
+
+File thêm/sửa cho Somee: `Program.cs`, `Hosting/DeploymentConfiguration.cs`, `Hosting/DatabaseReadOnlyCheck.cs`, `Data/SqlConnectionOpeningRetryInterceptor.cs`, `Middlewares/ApiExceptionMiddleware.cs`, `.env.example`, `README.md`, `tests/VietVan.Payment.Tests/DeploymentConfigurationTests.cs`, `tests/VietVan.Payment.Tests/SqlConnectionOpeningRetryTests.cs`, `tests/VietVan.Payment.Tests/ApiExceptionMiddlewareTests.cs`; và file riêng `appsettings.Local.json` bị ignore. `appsettings.json`, `appsettings.Development.json`, DbContext, Dockerfile và `.gitignore` đã kiểm tra, không cần sửa thêm. Không sửa FE hoặc tự push GitHub.
+
+Sau khi bổ sung chẩn đoán từng bảng/cột: build qua lệnh test thành công, **198/198 test đạt** (`somee-schema-diagnostics.trx`), gồm trường hợp thiếu FullName, tên Benefit khác Benefits, và cột phụ/khác chữ hoa thường. Các ví dụ này là tình huống kiểm thử, chưa phải kết luận cột nào thiếu trên Somee.
+
+### Kết quả Somee và bản vá SubscriptionPackages
+
+Kết quả mới nhất do người dùng cung cấp ngày 26/11/2026: kết nối Somee database `VietVan_New` thành công, SQL Server `15.0.2000.5`, compatibility level `150`; **cả 7 bảng LiteraryWorks, Users, UserAuthStates, UserSubscriptions, SubscriptionPackages, DramaProductions, DramaAssets đều PASS**. Lệnh kết thúc thành công và không chạy migration, seed hoặc thao tác thay đổi dữ liệu. Chưa xác nhận HTTP API đọc/login trên cloud; projection rỗng không kiểm tra toàn bộ dữ liệu, FK/index hoặc nghiệp vụ. Có thể chạy Backend bằng `dotnet run --launch-profile http`, mở `http://localhost:5080/swagger`, thử danh sách tác phẩm/kịch và đăng nhập bằng tài khoản đã import.
+
+Trước đó, `dbo.SubscriptionPackages` thiếu đúng **Benefits, BillingPeriod, Code, CreatedAt, Description, UpdatedAt**. Các bước bên dưới ghi lại cách xử lý; khi cả 7 bảng đã PASS thì không cần áp dụng lại bản vá.
+
+Đã chuẩn bị **`scripts/Upgrade_Somee_SubscriptionPackages.sql`**, chỉ bổ sung 6 cột trên nếu thiếu. Chạy thủ công trong SSMS bằng kết nối Somee, chọn `VietVan_New`; không chạy `PaymentUpgrade.sql`, baseline hoặc EF database update thay cho bản vá này.
+
+1. Sao lưu/export database Somee trước khi áp dụng và dừng Backend trong lúc nâng cấp.
+2. Mở script, chạy toàn bộ với mặc định `@ApplyChanges = 0` để xem trước. Cột thiếu phải báo `WILL ADD`; cột đã đúng báo `ALREADY MATCHES`. Nếu có `INCOMPATIBLE - STOP`, dừng để đối chiếu, không sửa/xóa cột cũ.
+3. Sau khi đối chiếu kết quả, đổi dòng `DECLARE @ApplyChanges bit = 0;` thành `DECLARE @ApplyChanges bit = 1;`, chạy lại toàn bộ. Script dùng transaction, rollback nếu lỗi; các cột đã đúng được bỏ qua khi chạy lại.
+4. Chạy `dotnet run --launch-profile http -- --check-db-readonly` một lần nữa. Khi schema đạt, chạy Backend và kiểm tra các API như hướng dẫn trên.
+
+Không seed gói, không thay đổi ID/tên/giá/tier/thời hạn hoặc subscription hiện có. `Benefits` và `Description` mới dùng chuỗi rỗng; `Code`, `BillingPeriod`, `UpdatedAt` mới dùng NULL; `CreatedAt` mới dùng thời điểm nâng cấp UTC, **không phải ngày tạo gói lịch sử**. Cột legacy như `Benefit` nếu có vẫn được giữ nguyên; không tự đoán/sao chép nội dung. BillingPeriod NULL dùng nhánh DurationInDays hiện có của SubscriptionRules; không tự gán Monthly/Yearly từ số ngày. Bản vá không tạo/sửa index hay bảng khác.
+
+Đã kiểm tra cú pháp bằng `TSql150Parser` (SQL Server 2019) cho batch chính và 6 câu ALTER động: **7 batch, 0 lỗi cú pháp**. Agent không trực tiếp chạy ALTER trên Somee hoặc database thử; kết quả schema sau xử lý được xác nhận qua output kiểm tra chỉ đọc do người dùng cung cấp như trên. Backend không gọi script này khi khởi động.
+
 ## Deploy Render Free bằng Docker
 
 Cập nhật 26/11/2026, repository `VietVan-EXE101/viet-van-backend`, branch `main`. Dockerfile nằm cùng cấp `VietVan.API.csproj` và `Program.cs`. Không cần solution để build: API target `net8.0`, sử dụng EF Core SQL Server. Hai project phụ nằm trong `tests/`. Không tìm thấy `AGENTS.md` hoặc solution trong lần rà soát này. Trước khi sửa, working tree sạch và `main` theo dõi `origin/main`.
@@ -65,11 +143,11 @@ Server=tcp:sql.example.com,1433;Database=VietVan;User Id=YOUR_SQL_USER;Password=
 
 Dùng TCP host/port cụ thể và SQL Authentication. Không dùng `Trusted_Connection=True`, `Integrated Security=True`, `(localdb)` hoặc `localhost\SQLEXPRESS`. Không công khai database cho mọi IP nếu có thể giới hạn firewall. Tài khoản ứng dụng cần các quyền nghiệp vụ cần thiết; dùng tài khoản vận hành riêng để thay đổi schema.
 
-Ưu tiên SQL Server có sẵn do nhóm/trường cung cấp nếu cần demo miễn phí. Có thể **tự đánh giá** [Azure SQL Database free tier](https://learn.microsoft.com/en-us/azure/azure-sql/database/free-tier?view=azuresql): cùng họ SQL Database Engine, có điều kiện subscription/hạn mức và giới hạn đối với database hiện hữu. Nguồn hiện tại yêu cầu bắt đầu bằng database development/sample mới; không giả định restore/chuyển database cũ vào free tier được hỗ trợ. Chỉ chọn nếu phù hợp, đặt chế độ dừng khi hết quota; không tự bật trả phí hoặc tạo resource trong lượt chuẩn bị source này. Không đổi ứng dụng sang PostgreSQL.
+Database cloud hiện được chọn là **Somee SQL Server 2019 Express**, đã import dữ liệu. Dùng chuỗi chính thức trong mục Somee ở đầu tài liệu cho cả local runtime và Render. Giữ nguyên database và provider SQL Server.
 
 Với database hiện có:
 
-1. Sao lưu SQL Server và media nhất quán; khôi phục/kiểm tra trên môi trường riêng trước khi cấu hình host mới.
+1. Giữ bản dự phòng SQL Server local và media. Database Somee đã import không cần import/restore hoặc tạo lại; bắt đầu bằng lệnh kiểm tra chỉ đọc ở mục Somee.
 2. Đối chiếu schema/migration history bằng các script chẩn đoán trong `scripts/`, đọc [README_DRAMA.md](README_DRAMA.md) và [DATABASE_COMPATIBILITY_REPORT.md](DATABASE_COMPATIBILITY_REPORT.md). Không chọn nhầm database đang có dữ liệu để chạy baseline.
 3. Các migration lịch sử và project bootstrap có guard/phụ thuộc schema cũ. **Không chạy mù `dotnet ef database update`, không chạy bootstrap local trên Render và không sửa history để vượt guard.** Chuẩn bị script nâng cấp đã review đúng schema của database đích; chạy ngoài bước khởi động Web Service sau khi có backup.
 4. `VIETVAN_MIGRATION_CONNECTION` chỉ phục vụ design-time tooling của API khi người vận hành dùng EF. Connection runtime vẫn là `ConnectionStrings__DefaultConnection`. Không tự chạy migration trong Dockerfile/entrypoint hoặc trong `/health`.

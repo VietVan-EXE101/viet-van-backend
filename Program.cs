@@ -19,11 +19,13 @@ using VietVan.API.Middlewares;
 using VietVan.API.Hosting;
 
 var setupAdmin = args.Contains("--setup-admin", StringComparer.OrdinalIgnoreCase);
+var checkDatabaseReadOnly = args.Contains("--check-db-readonly", StringComparer.OrdinalIgnoreCase);
 var testEmailIndex = Array.FindIndex(args, x => x.Equals("--test-email", StringComparison.OrdinalIgnoreCase));
 var testEmail = testEmailIndex >= 0;
 var testRecipient = testEmail && testEmailIndex + 1 < args.Length ? args[testEmailIndex + 1] : null;
 var builder = WebApplication.CreateBuilder(args
     .Where((arg, index) => !arg.Equals("--setup-admin", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--check-db-readonly", StringComparison.OrdinalIgnoreCase)
         && index != testEmailIndex && (!testEmail || index != testEmailIndex + 1))
     .ToArray());
 var renderDeployment = DeploymentConfiguration.IsRender(builder.Configuration);
@@ -69,11 +71,19 @@ if (testEmail)
     return;
 }
 
+if (checkDatabaseReadOnly)
+{
+    Environment.ExitCode = await DatabaseReadOnlyCheck.RunAsync(builder.Configuration, builder.Environment, Console.Out);
+    return;
+}
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 var sqlConnection = DeploymentConfiguration.SqlConnection(builder.Configuration, builder.Environment);
 builder.Services.AddDbContext<VietVanDbContext>(options =>
-    options.UseSqlServer(sqlConnection));
+    options.UseSqlServer(sqlConnection)
+        .AddInterceptors(SqlConnectionOpeningRetryInterceptor.Instance)
+        .EnableSensitiveDataLogging(false));
 if (renderDeployment)
 {
     builder.Services.Configure<ForwardedHeadersOptions>(DeploymentConfiguration.ConfigureRenderProxy);
@@ -216,7 +226,7 @@ if (setupAdmin)
 // Provision only the explicitly configured development account in the existing schema.
 if (app.Environment.IsDevelopment())
 {
-    if (builder.Configuration.GetValue<bool>("DevelopmentAdmin:Enabled"))
+    if (builder.Configuration.GetValue<bool>("DevelopmentAdmin:Enabled") && DeploymentConfiguration.IsLocalSqlServer(sqlConnection))
     {
         var adminPassword = builder.Configuration["DevelopmentAdmin:Password"]
             ?? throw new InvalidOperationException("Thiếu cấu hình DevelopmentAdmin:Password.");

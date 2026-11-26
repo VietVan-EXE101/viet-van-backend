@@ -59,4 +59,50 @@ public class DeploymentConfigurationTests
         const string configured = "Server=localhost;Database=EnvironmentOverride;Integrated Security=True";
         Assert.Equal(configured, DeploymentConfiguration.SqlConnection(Config(("ConnectionStrings:DefaultConnection", configured)), directory.Environment));
     }
+
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Production")]
+    public void SomeeOfficialConnectionStringKeywordsAreAcceptedUnchanged(string environment)
+    {
+        const string value = "workstation id=sample.mssql.somee.com;packet size=4096;user id=sample_login;pwd=sample-only;data source=sample.mssql.somee.com;persist security info=False;initial catalog=Sample;Encrypt=True;TrustServerCertificate=False";
+        Assert.Equal(value, DeploymentConfiguration.SqlConnection(Config(("ConnectionStrings:DefaultConnection", value)), new PlatformEnvironment { EnvironmentName = environment }));
+        Assert.False(DeploymentConfiguration.IsLocalSqlServer(value));
+    }
+
+    [Theory]
+    [InlineData("Server=sample.mssql.somee.com;Database=Sample;Integrated Security=True")]
+    [InlineData("Server=sample.mssql.somee.com;Database=Sample;User Id=sample;Password=REPLACE_WITH_SOMEE_PASSWORD")]
+    [InlineData("Server=sample.mssql.somee.com;Database=Sample;User Id=sample")]
+    [InlineData("Server=sample\\.mssql.somee.com;Database=Sample;User Id=sample;Password=sample-only")]
+    public void SomeeRejectsWindowsAuthenticationPlaceholdersAndMistypedHostnameEvenInDevelopment(string value)
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => DeploymentConfiguration.SqlConnection(Config(("ConnectionStrings:DefaultConnection", value)), new PlatformEnvironment()));
+        Assert.DoesNotContain("sample-only", error.Message);
+    }
+
+    [Fact]
+    public void RealEnvironmentProviderOverridesJsonConnectionString()
+    {
+        var prefix = "VIETVAN_CONFIG_TEST_" + Guid.NewGuid().ToString("N") + "_";
+        const string value = "Server=environment.mssql.somee.com;Database=Sample;User Id=sample;Password=sample-only";
+        Environment.SetEnvironmentVariable(prefix + "ConnectionStrings__DefaultConnection", value);
+        try
+        {
+            using var directory = new TestMediaDirectory();
+            File.WriteAllText(Path.Combine(directory.Environment.ContentRootPath, "appsettings.Local.json"),
+                "{\"ConnectionStrings\":{\"DefaultConnection\":\"Server=localhost;Database=Local;Integrated Security=True\"}}");
+            var configuration = new ConfigurationBuilder().SetBasePath(directory.Environment.ContentRootPath)
+                .AddJsonFile("appsettings.Local.json").AddEnvironmentVariables(prefix).Build();
+            Assert.Equal(value, DeploymentConfiguration.SqlConnection(configuration, directory.Environment));
+        }
+        finally { Environment.SetEnvironmentVariable(prefix + "ConnectionStrings__DefaultConnection", null); }
+    }
+
+    [Theory]
+    [InlineData("Server=localhost\\SQLEXPRESS;Database=Local;Integrated Security=True", true)]
+    [InlineData("Server=127.0.0.1;Database=Local;Integrated Security=True", true)]
+    [InlineData("Server=sample.mssql.somee.com;Database=Sample;User Id=sample;Password=sample-only", false)]
+    public void DevelopmentAdminProvisioningCanBeRestrictedToLocalSql(string value, bool local)
+        => Assert.Equal(local, DeploymentConfiguration.IsLocalSqlServer(value));
 }

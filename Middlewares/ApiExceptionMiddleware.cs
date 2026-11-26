@@ -14,7 +14,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
         catch (Exception ex) when (!context.Response.HasStarted)
         {
-            var sql = ex as SqlException ?? ex.InnerException as SqlException;
+            var sql = FindSqlException(ex);
             var (status, message, code) = sql?.Number switch
             {
                 207 or 208 => (503, "Cấu trúc database chưa tương thích với Backend. Cần kiểm tra và chạy migration còn thiếu.", "DATABASE_UPGRADE_REQUIRED"),
@@ -30,6 +30,15 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
             context.Response.Clear(); context.Response.StatusCode = status;
             await context.Response.WriteAsJsonAsync(new ApiErrorResponse(message, context.TraceIdentifier, code));
         }
+    }
+
+    private static SqlException? FindSqlException(Exception exception)
+    {
+        if (exception is SqlException sql) return sql;
+        // SqlClient connection retries wrap exhausted attempts in AggregateException.
+        if (exception is AggregateException aggregate)
+            return aggregate.Flatten().InnerExceptions.Select(FindSqlException).FirstOrDefault(x => x is not null);
+        return exception.InnerException is null ? null : FindSqlException(exception.InnerException);
     }
 
     private static (int Status, string Message, string? Code) Classify(Exception ex)

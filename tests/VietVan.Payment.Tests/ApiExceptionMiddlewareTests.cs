@@ -74,4 +74,17 @@ public class ApiExceptionMiddlewareTests
         Assert.Same(exception, logger.Exception);
         Assert.Contains("login-error-trace", logger.Message);
     }
+
+    [Fact]
+    public async Task ExhaustedConnectionRetriesKeepDatabaseUnavailableContract()
+    {
+        var context = new DefaultHttpContext(); context.Response.Body = new MemoryStream();
+        var error = new AggregateException(new AggregateException(SqlError(53)), SqlError(53));
+        await new ApiExceptionMiddleware(_ => throw error, new CaptureLogger()).InvokeAsync(context);
+        Assert.Equal(503, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+        var body = await new StreamReader(context.Response.Body).ReadToEndAsync();
+        Assert.Contains("DATABASE_UNAVAILABLE", body);
+        Assert.DoesNotContain("private-database-diagnostic", body);
+    }
 }
