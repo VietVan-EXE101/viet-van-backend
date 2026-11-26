@@ -40,6 +40,32 @@ public class SqlConnectionOpeningRetryTests
         .UseSqlServer("Server=sample.mssql.somee.com;Database=Sample;User Id=sample;Password=sample-only").Options);
 
     [Fact]
+    public void SchemaDiagnosticDetectsLegacySceneColumnsMissingPreviewReferences()
+    {
+        using var db = DiagnosticContext();
+        var columns = new[] { "Id", "DramaProductionId", "SceneKey", "Title", "SortOrder", "StartMs", "EndMs",
+            "AudioOffsetMs", "BackgroundAssetId", "AudioAssetId", "VideoAssetId" };
+        Assert.Equal(new[] { "PreviewAudioAssetId", "PreviewVideoAssetId" },
+            DatabaseReadOnlyCheck.MissingColumns<DramaScene>(db, columns));
+    }
+
+    [Fact]
+    public void SchemaDiagnosticDetectsMissingPublishedLegacySnapshotColumn()
+    {
+        using var db = DiagnosticContext();
+        var columns = new[] { "DramaProductionId", "DraftJson", "PublishedJson", "UpdatedAt", "PublishedAt", "Revision" };
+        Assert.Equal(new[] { "PublishedLegacyJson" }, DatabaseReadOnlyCheck.MissingColumns<DramaManifest>(db, columns));
+    }
+
+    [Fact]
+    public void SchemaDiagnosticDetectsMissingViewingVersionColumn()
+    {
+        using var db = DiagnosticContext();
+        Assert.Equal(new[] { "VersionType" }, DatabaseReadOnlyCheck.MissingColumns<DramaViewing>(db,
+            new[] { "UserId", "DramaProductionId", "AccessedAt" }));
+    }
+
+    [Fact]
     public void EfConnectionsRetryOpeningWithoutEnablingTransactionOrCommandReplay()
     {
         var options = new DbContextOptionsBuilder<VietVanDbContext>()

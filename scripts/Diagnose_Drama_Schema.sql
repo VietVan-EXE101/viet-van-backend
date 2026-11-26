@@ -1,6 +1,8 @@
 /* Chỉ đọc. Chạy trong SSMS trên cùng instance/database mà API sử dụng.
    Sao chép kết quả, không bao gồm token, mật khẩu hoặc nội dung dữ liệu. */
 SET NOCOUNT ON;
+IF DB_NAME() <> N'VietVan_New'
+    THROW 51000, 'Select the imported VietVan_New database before running diagnostics.', 1;
 SELECT @@SERVERNAME AS ServerName, DB_NAME() AS DatabaseName;
 -- Current EF properties used by create/upload/detail (including retained legacy fields).
 -- A missing column can fail SELECT even when its scene/asset table contains no rows.
@@ -29,7 +31,9 @@ WITH Expected(TableName,ColumnName) AS (
  (N'DramaHotspots',N'IsEnabled'),(N'DramaHotspots',N'ActionKey'),(N'DramaHotspots',N'TargetSegmentIdsJson'),
  (N'DramaManifests',N'DramaProductionId'),(N'DramaManifests',N'DraftJson'),
  (N'DramaManifests',N'PublishedJson'),(N'DramaManifests',N'PublishedLegacyJson'),
- (N'DramaManifests',N'UpdatedAt'),(N'DramaManifests',N'PublishedAt'),(N'DramaManifests',N'Revision')
+ (N'DramaManifests',N'UpdatedAt'),(N'DramaManifests',N'PublishedAt'),(N'DramaManifests',N'Revision'),
+ (N'CulturalInsightViews',N'UserId'),(N'CulturalInsightViews',N'DramaProductionId'),
+ (N'CulturalInsightViews',N'DramaHotspotId'),(N'CulturalInsightViews',N'ViewedAt')
  ) v(TableName,ColumnName)
 )
 SELECT e.TableName,e.ColumnName,
@@ -46,12 +50,12 @@ SELECT s.name AS SchemaName, t.name AS TableName, c.column_id, c.name AS ColumnN
 FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
 JOIN sys.columns c ON c.object_id=t.object_id
 LEFT JOIN sys.default_constraints dc ON dc.object_id=c.default_object_id
-WHERE t.name IN (N'DramaProductions',N'DramaScenes',N'DramaAssets',N'DramaHotspots',N'DramaCharacters',N'DramaPlaybackSegments')
+WHERE t.name LIKE N'Drama%' OR t.name=N'CulturalInsightViews'
 ORDER BY s.name,t.name,c.column_id;
 SELECT SCHEMA_NAME(t.schema_id) AS SchemaName,t.name AS TableName,
        SUM(CASE WHEN p.index_id IN (0,1) THEN CONVERT(bigint,p.rows) ELSE 0 END) AS ApproximateRows
 FROM sys.tables t LEFT JOIN sys.partitions p ON p.object_id=t.object_id AND p.index_id IN (0,1)
-WHERE t.name IN (N'DramaProductions',N'DramaScenes',N'DramaAssets',N'DramaHotspots',N'DramaCharacters',N'DramaPlaybackSegments')
+WHERE t.name LIKE N'Drama%' OR t.name=N'CulturalInsightViews'
 GROUP BY t.schema_id,t.name ORDER BY SchemaName,TableName;
 SELECT fk.name AS ForeignKeyName, SCHEMA_NAME(pt.schema_id) AS ParentSchema,pt.name AS ParentTable,pc.name AS ParentColumn,
        SCHEMA_NAME(rt.schema_id) AS TargetSchema,rt.name AS TargetTable,rc.name AS TargetColumn,
@@ -60,4 +64,25 @@ FROM sys.foreign_keys fk JOIN sys.foreign_key_columns fkc ON fkc.constraint_obje
 JOIN sys.tables pt ON pt.object_id=fkc.parent_object_id JOIN sys.columns pc ON pc.object_id=pt.object_id AND pc.column_id=fkc.parent_column_id
 JOIN sys.tables rt ON rt.object_id=fkc.referenced_object_id JOIN sys.columns rc ON rc.object_id=rt.object_id AND rc.column_id=fkc.referenced_column_id
 WHERE pt.name LIKE N'Drama%' OR rt.name LIKE N'Drama%'
+   OR pt.name=N'CulturalInsightViews' OR rt.name=N'CulturalInsightViews'
 ORDER BY ParentSchema,ParentTable,ForeignKeyName,fkc.constraint_column_id;
+
+-- PK/unique/index cần cho mapping giữ ID và quan hệ của schema cũ.
+SELECT SCHEMA_NAME(t.schema_id) AS SchemaName,t.name AS TableName,
+       i.name AS IndexName,i.is_primary_key AS IsPrimaryKey,i.is_unique AS IsUnique,
+       i.filter_definition AS FilterDefinition,ic.key_ordinal AS KeyPosition,
+       c.name AS ColumnName,ic.is_included_column AS IsIncluded
+FROM sys.tables t
+JOIN sys.indexes i ON i.object_id=t.object_id AND i.index_id>0
+JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id
+JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+WHERE t.name LIKE N'Drama%' OR t.name=N'CulturalInsightViews'
+ORDER BY SchemaName,TableName,IndexName,KeyPosition,c.column_id;
+
+-- Giữ các ràng buộc nghiệp vụ hiện có, không tắt/drop để ép dữ liệu vào model mới.
+SELECT SCHEMA_NAME(t.schema_id) AS SchemaName,t.name AS TableName,
+       cc.name AS ConstraintName,cc.definition AS CheckDefinition,
+       cc.is_disabled AS IsDisabled,cc.is_not_trusted AS IsNotTrusted
+FROM sys.check_constraints cc JOIN sys.tables t ON t.object_id=cc.parent_object_id
+WHERE t.name LIKE N'Drama%' OR t.name=N'CulturalInsightViews'
+ORDER BY SchemaName,TableName,ConstraintName;

@@ -43,6 +43,12 @@ public static class DatabaseReadOnlyCheck
             passed &= await CheckTableAsync<SubscriptionPackage>(db, connection, output, timeout.Token);
             passed &= await CheckTableAsync<DramaProduction>(db, connection, output, timeout.Token);
             passed &= await CheckTableAsync<DramaAsset>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<DramaScene>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<DramaHotspot>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<DramaManifest>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<DramaViewing>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<CulturalInsightView>(db, connection, output, timeout.Token);
+            passed &= await CheckTableAsync<Review>(db, connection, output, timeout.Token);
             if (!passed)
             {
                 await output.WriteLineAsync("Schema check failed. Review the listed tables/columns before planning an upgrade; no schema or data was changed.");

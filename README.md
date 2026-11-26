@@ -52,7 +52,7 @@ dotnet run --launch-profile http -- --check-db-readonly
 dotnet run --launch-profile http
 ```
 
-Lệnh `--check-db-readonly` chỉ chạy SELECT: tên database/SQL version/compatibility level và các projection `TOP (0)` của LiteraryWorks, Users, UserAuthStates, UserSubscriptions, SubscriptionPackages, DramaProductions, DramaAssets. Lệnh đối chiếu tên cột thực tế với model EF, in riêng `PASS`/`FAIL` cho từng bảng và tên cột còn thiếu; tiếp tục kiểm tra bảng sau khi một bảng lệch schema. Không đọc ra user record/password hash, không trả nội dung tác phẩm, không UPDATE/INSERT/DELETE, không seed/migration và không khởi động PaymentExpiryWorker. Mật khẩu placeholder/Windows Authentication Somee bị chặn trước khi kết nối. Lỗi cấu hình/schema chỉ in bước kiểm tra, tên bảng/cột, loại/mã lỗi phù hợp, không in chuỗi hoặc provider message chứa dữ liệu nhạy cảm. Kiểm tra này xác nhận bảng/cột và projection rỗng; không thay thế kiểm tra kiểu dữ liệu, dữ liệu thực tế, FK/index hoặc API nghiệp vụ.
+Lệnh `--check-db-readonly` chỉ chạy SELECT: tên database/SQL version/compatibility level và các projection `TOP (0)` của 13 bảng: LiteraryWorks, Users, UserAuthStates, UserSubscriptions, SubscriptionPackages, DramaProductions, DramaAssets, DramaScenes, DramaHotspots, DramaManifests, DramaViewings, CulturalInsightViews, Reviews. Sáu bảng cuối được bổ sung sau lần kiểm tra ban đầu 7 bảng để bao phủ thêm luồng chi tiết/tương tác kịch. Lệnh đối chiếu tên cột thực tế với model EF, in riêng `PASS`/`FAIL` cho từng bảng và tên cột còn thiếu; tiếp tục kiểm tra bảng sau khi một bảng lệch schema. Không đọc ra user record/password hash, không trả nội dung tác phẩm, không UPDATE/INSERT/DELETE, không seed/migration và không khởi động PaymentExpiryWorker. Mật khẩu placeholder/Windows Authentication Somee bị chặn trước khi kết nối. Lỗi cấu hình/schema chỉ in bước kiểm tra, tên bảng/cột, loại/mã lỗi phù hợp, không in chuỗi hoặc provider message chứa dữ liệu nhạy cảm. Kiểm tra này xác nhận bảng/cột và projection rỗng; không thay thế kiểm tra kiểu dữ liệu, dữ liệu thực tế, FK/index hoặc API nghiệp vụ.
 
 API giữ địa chỉ `http://localhost:5080`, Swagger `/swagger`, health `/health`. Sau khi kiểm tra SQL thành công, thử `GET /api/works?page=1&pageSize=10`, `GET /api/dramas` và `POST /api/auth/login` bằng tài khoản **đã có trong database import**. Không tạo/reset Admin để vượt lỗi login. Health 200 không chứng minh cloud database đúng schema. Khi chạy Web Service bình thường, PaymentExpiryWorker vẫn thực hiện nghiệp vụ hết hạn đơn hiện có; dùng lệnh kiểm tra riêng ở trên nếu chỉ muốn đọc.
 
@@ -78,6 +78,22 @@ Trước đó, `dbo.SubscriptionPackages` thiếu đúng **Benefits, BillingPeri
 Không seed gói, không thay đổi ID/tên/giá/tier/thời hạn hoặc subscription hiện có. `Benefits` và `Description` mới dùng chuỗi rỗng; `Code`, `BillingPeriod`, `UpdatedAt` mới dùng NULL; `CreatedAt` mới dùng thời điểm nâng cấp UTC, **không phải ngày tạo gói lịch sử**. Cột legacy như `Benefit` nếu có vẫn được giữ nguyên; không tự đoán/sao chép nội dung. BillingPeriod NULL dùng nhánh DurationInDays hiện có của SubscriptionRules; không tự gán Monthly/Yearly từ số ngày. Bản vá không tạo/sửa index hay bảng khác.
 
 Đã kiểm tra cú pháp bằng `TSql150Parser` (SQL Server 2019) cho batch chính và 6 câu ALTER động: **7 batch, 0 lỗi cú pháp**. Agent không trực tiếp chạy ALTER trên Somee hoặc database thử; kết quả schema sau xử lý được xác nhận qua output kiểm tra chỉ đọc do người dùng cung cấp như trên. Backend không gọi script này khi khởi động.
+
+### Chẩn đoán kịch không hoạt động sau deploy
+
+Database lưu bản ghi kịch, scene/hotspot, JSON manifest và khóa `DramaAssets.RelativePath`; ảnh/GIF/audio/video thực được LocalFileStorageService lưu trong `PrivateMedia`. Import SQL không chuyển các file này. Docker hiện loại PrivateMedia khỏi build; Render Free chỉ có filesystem tạm. Kiểm tra local hiện thấy 95 file drama-assets, tổng 290826359 byte; chưa đối chiếu từng file với các asset trên Somee, chưa xác nhận chúng tồn tại trên Render. Không kết luận mất toàn bộ dữ liệu database từ lỗi 404 media.
+
+Làm rõ từng lớp trước khi sửa:
+
+- Chạy lại `dotnet run --launch-profile http -- --check-db-readonly` để kiểm tra 13 bảng; kết quả 7 bảng trước đây chưa xác nhận schema scene/hotspot/manifest/view/review.
+- Trong SSMS kết nối Somee, chọn VietVan_New, chạy **`scripts/Diagnose_Drama_Deployment.sql`** (mặc định kịch 22). Script chỉ SELECT: số hàng xấp xỉ, trạng thái public, danh sách asset/khóa file, cờ có bản nháp/bản xuất bản và số scene/hotspot. Không in nội dung JSON hoặc thông tin đăng nhập; không publish hoặc sửa dữ liệu. Không có scene/manifest có thể hợp lệ với kịch chỉ có video.
+- So sánh `GET /api/admin/dramas/22`, `/api/admin/dramas/22/manifest`, `/api/admin/dramas/22/assets` và API media với JWT Admin trên Render. Metadata đọc được nhưng media 404 cần kiểm tra file/khóa; response 503 DATABASE_UPGRADE_REQUIRED cần đối chiếu schema; API public chỉ trả kịch IsPublished=true và Status=PUBLISHED, tài nguyên tương tác còn cần quyền PRO/Admin.
+
+Khôi phục media cần chuyển file thực theo đúng storage key, giữ nguyên ID asset và liên kết scene/hotspot/manifest. Upload lại bằng POST assets sẽ tạo ID mới, không tự thay thế asset cũ. Giải pháp lâu dài cần tích hợp storage bên ngoài cho upload và đọc media, giữ kiểm tra quyền hiện có; chỉ đổi Storage__RootPath không tự upload file lên cloud. Chưa tích hợp provider hoặc di chuyển file trong bước chẩn đoán này.
+
+Kiểm thử sau khi mở rộng chẩn đoán: **201/201 test đạt** (`drama-deployment-diagnostics.trx`), gồm thiếu cột scene preview, snapshot manifest cũ và phiên bản lượt xem. Chưa chạy lại 13 bảng trên Somee; không tự động push/deploy hoặc áp dụng thay đổi database.
+
+Kết quả 13 bảng mới do người dùng cung cấp: 10 PASS; DramaScenes thiếu 8 cột, DramaHotspots thiếu 13 cột, CulturalInsightViews báo SQL 208. Xem `DATABASE_COMPATIBILITY_REPORT.md` để biết danh sách cụ thể. Đã mở rộng `scripts/Diagnose_Drama_Schema.sql` lấy cấu trúc toàn bộ bảng Drama (gồm media/playback segment/target segment nếu có), PK/FK/index/check và số hàng. Cần đối chiếu metadata này trước khi viết bản chuyển đổi; chưa tạo/chạy migration sửa scene/hotspot, chưa tự thêm timeline, tọa độ hoặc liên kết giả. Script chỉ đọc, kiểm tra cú pháp SQL Server 2019 đạt.
 
 ## Deploy Render Free bằng Docker
 

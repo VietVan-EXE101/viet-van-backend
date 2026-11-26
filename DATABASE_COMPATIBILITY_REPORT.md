@@ -1,6 +1,26 @@
-# Đối chiếu VietVan_New — chưa có schema SQL đích
+# Đối chiếu VietVan_New — kết quả Somee và phần schema cần bổ sung
 
-File `VietVan_New_Full_Standalone.sql` chưa được tìm thấy trong workspace, thư mục dự án cha hoặc các thư mục Desktop, Documents, Downloads được kiểm tra. Kết nối SQL Server từ sandbox ở các lượt trước thất bại khi tạo SSPI context. Đây không phải bằng chứng SQL Server hoặc Windows Authentication của người dùng bị lỗi. Không có dữ liệu schema live hoặc nội dung file đích, nên mọi kết luận dưới đây là đối chiếu giữa source và *danh sách tên bảng trong yêu cầu*, không phải xác nhận bảng/cột thực tế.
+## Xác nhận từ kiểm tra chỉ đọc ngày 26/11/2026
+
+Output người dùng cung cấp xác nhận kết nối Somee database VietVan_New, SQL Server 15.0.2000.5, compatibility level 150. Kiểm tra 13 bảng đạt 10 bảng và lỗi 3 bảng:
+
+| Bảng | Kết quả |
+| --- | --- |
+| DramaScenes | Thiếu AudioAssetId, AudioOffsetMs, BackgroundAssetId, EndMs, SceneKey, StartMs, Title, VideoAssetId |
+| DramaHotspots | Thiếu DramaSceneId, EndMs, Height, IsEnabled, MeaningEn, MeaningVi, StartMs, TargetSegmentIdsJson, VisualAssetId, Width, X, Y, ZIndex |
+| CulturalInsightViews | Không tìm thấy hoặc không nhìn thấy bảng, SQL error 208 |
+
+Các projection LiteraryWorks, Users, UserAuthStates, UserSubscriptions, SubscriptionPackages, DramaProductions, DramaAssets, DramaManifests, DramaViewings và Reviews đều PASS. Đây là xác nhận tên bảng/cột/projection rỗng; chưa xác nhận kiểu dữ liệu, nội dung, quan hệ hoặc HTTP API trên Render.
+
+Trạng thái này giải thích được lỗi đọc scene/hotspot legacy. Không chỉ cần bổ sung các cột preview; không được dùng baseline hoặc thêm các giá trị timeline/tọa độ/khóa tham chiếu giả để làm kiểm tra PASS. Cần metadata các cột hiện có, PK/FK/index/check và số hàng trước khi thiết kế mapping và chuyển đổi. `scripts/Diagnose_Drama_Schema.sql` đã mở rộng để lấy metadata toàn bộ bảng Drama và CulturalInsightViews, không sửa schema hoặc đọc nội dung bản ghi. Script đã kiểm tra cú pháp SQL Server 2019, chưa được agent chạy trên Somee.
+
+CulturalInsightViews còn nằm trong model nhưng source hiện không truy cập DbSet này trong service nghiệp vụ; endpoint insight usage cũ trả dữ liệu quyền PRO cố định. Vì vậy lỗi bảng này cần được đối chiếu với thiết kế đã import, không mặc định coi đây là nguyên nhân của mọi lỗi kịch hoặc tự tạo bảng trùng chức năng.
+
+Media là vấn đề độc lập: database giữ RelativePath, file thực nằm trong PrivateMedia; Docker loại thư mục này khỏi build. Local hiện có 95 file drama-assets (290826359 byte), chưa đối chiếu từng file với Somee. Cần khôi phục/chuyển storage theo khóa file hiện có và giữ ID asset; schema được sửa không tự đưa file lên Render.
+
+## Ghi nhận trước khi có kết quả Somee
+
+File `VietVan_New_Full_Standalone.sql` chưa được tìm thấy trong các lần tìm kiếm trước. Kết nối SQL Server local từ sandbox ở các lượt trước thất bại khi tạo SSPI context. Đây không phải bằng chứng SQL Server hoặc Windows Authentication của người dùng bị lỗi. Các ghi nhận dưới đây là lịch sử đối chiếu giữa source và *danh sách tên bảng trong yêu cầu*; kết quả Somee mới hơn ở đầu file là nguồn xác nhận cho các cột thiếu đã liệt kê, còn cấu trúc cột hiện có/FK/data mapping vẫn cần bổ sung.
 
 ## Danh sách cần đối chiếu
 
