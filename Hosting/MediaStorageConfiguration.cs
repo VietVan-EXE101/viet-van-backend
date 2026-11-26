@@ -19,7 +19,7 @@ public static class MediaStorageConfiguration
     public static void AddMediaStorage(this IServiceCollection services, IConfiguration configuration, IWebHostEnvironment environment)
     {
         var effective = Effective(configuration, environment);
-        var storage = effective.GetSection("Storage").Get<StorageOptions>() ?? new();
+        var storage = ResolveOptions(effective);
         services.AddSingleton<IOptions<StorageOptions>>(Options.Create(storage));
         if (storage.Provider.Equals("Local", StringComparison.OrdinalIgnoreCase))
             services.AddScoped<IFileStorageService, LocalFileStorageService>();
@@ -33,5 +33,18 @@ public static class MediaStorageConfiguration
             services.AddScoped<IFileStorageService, R2FileStorageService>();
         }
         else throw new InvalidOperationException("Storage__Provider chỉ hỗ trợ Local hoặc R2.");
+    }
+
+    internal static StorageOptions ResolveOptions(IConfiguration effective)
+    {
+        var storage = effective.GetSection("Storage").Get<StorageOptions>() ?? new();
+        if (DeploymentConfiguration.IsRender(effective))
+        {
+            // Render's five R2 credentials must never silently select ephemeral local storage.
+            if (string.IsNullOrWhiteSpace(effective["Storage:Provider"])) storage.Provider = "R2";
+            if (!string.Equals(storage.Provider, "R2", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Render cần Storage__Provider=R2; không dùng Local filesystem tạm thời. Không có fallback Local khi R2 lỗi.");
+        }
+        return storage;
     }
 }

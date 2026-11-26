@@ -68,7 +68,8 @@ public class DramaMediaController(VietVanDbContext db, EntitlementService entitl
 }
 
 [ApiController, Authorize(Roles = "Admin"), Route("api/admin/dramas")]
-public class AdminDramaMediaController(VietVanDbContext db, IFileStorageService storage) : ControllerBase
+public class AdminDramaMediaController(VietVanDbContext db, IFileStorageService storage,
+    ILogger<AdminDramaMediaController>? logger = null) : ControllerBase
 {
     [HttpGet("{dramaId:int}/assets/{assetId:int}/media")]
     public Task<IActionResult> Get(int dramaId, int assetId, CancellationToken ct) => Serve(dramaId, assetId, false, ct);
@@ -79,8 +80,20 @@ public class AdminDramaMediaController(VietVanDbContext db, IFileStorageService 
     private async Task<IActionResult> Serve(int dramaId, int assetId, bool json, CancellationToken ct)
     {
         var asset = await db.DramaAssets.AsNoTracking().SingleOrDefaultAsync(a => a.Id == assetId && a.DramaProductionId == dramaId, ct);
-        var access = asset is null ? null : await storage.GetAccessAsync(asset.RelativePath, ct, protectedAccess: true);
-        if (access is null) return NotFound();
+        if (asset is null)
+        {
+            logger?.LogWarning("Admin media 404 Reason=METADATA_NOT_FOUND DramaId={DramaId} AssetId={AssetId} TraceId={TraceId}",
+                dramaId, assetId, HttpContext.TraceIdentifier);
+            return NotFound();
+        }
+        var access = await storage.GetAccessAsync(asset.RelativePath, ct, protectedAccess: true);
+        if (access is null)
+        {
+            // Log ID/provider/trace để chẩn đoán; không in key hoặc signed URL.
+            logger?.LogWarning("Admin media 404 Reason=FILE_NOT_FOUND DramaId={DramaId} AssetId={AssetId} StorageType={StorageType} TraceId={TraceId}",
+                dramaId, assetId, storage.GetType().Name, HttpContext.TraceIdentifier);
+            return NotFound();
+        }
         Response.Headers.CacheControl = "private, no-store";
         Response.Headers.XContentTypeOptions = "nosniff";
         if (json) return Ok(new { url = access.Url ?? $"/api/admin/dramas/{dramaId}/assets/{assetId}/media",

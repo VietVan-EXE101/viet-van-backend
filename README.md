@@ -7,7 +7,7 @@ Tích hợp .NET 8, `AWSSDK.S3` 4.0.104.12 và `AWSSDK.Core` 4.0.103 được c�
 
 ### Cấu hình local và Render
 
-Mặc định runtime vẫn `Storage:Provider=Local` nếu chưa cấu hình. Để dùng R2, nhập các biến dưới đây trên Render → Environment rồi Save and deploy:
+Local ngoài Docker vẫn mặc định `Storage:Provider=Local` nếu chưa cấu hình. Docker đặt `Storage__Provider=R2`; trên Render (`RENDER=true`), thiếu biến provider cũng chọn R2, còn cấu hình `Local` bị từ chối khi khởi động. R2 lỗi không fallback Local. Giữ 5 tên biến R2 dưới đây; khuyến nghị khai báo rõ `Storage__Provider=R2` trên Render → Environment rồi Save and deploy:
 
 | Biến | Giá trị |
 |---|---|
@@ -21,6 +21,8 @@ Mặc định runtime vẫn `Storage:Provider=Local` nếu chưa cấu hình. Đ
 | `R2__ProtectedUrlMinutes` | `5`, tùy chọn 1–15 |
 
 Không nhập token Cloudflare quản trị vào SecretAccessKey. R2 dùng cặp S3 credentials. Endpoint chỉ chấp nhận HTTPS của đúng Account ID, không kèm tên bucket hoặc đường dẫn. Giữ nguyên `ConnectionStrings__DefaultConnection` Somee hiện có. `Storage__RootPath` vẫn chỉ đường dẫn local, không phải R2 endpoint.
+
+Nếu media mất sau redeploy, xem [chẩn đoán và kiểm thử redeploy](MEDIA_STORAGE_OPERATIONS_VI.md). Lệnh `dotnet run --launch-profile http -- --audit-media-storage-readonly` chỉ SELECT liên kết/revision và HEAD các key trong bucket, không upload lại media, không sửa database. Log startup phải có `Provider=R2 BucketName=vietvan-media`.
 
 Local dùng User Secrets hoặc chèn hai section **ở cấp gốc** vào file `appsettings.Local.json` đã bị ignore; giữ nguyên các section/Connection String đang có:
 

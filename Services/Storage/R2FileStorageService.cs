@@ -3,7 +3,8 @@ using VietVan.API.Services.Implementations;
 
 namespace VietVan.API.Services.Storage;
 
-public sealed class R2FileStorageService(IR2ObjectClient objects, IOptions<R2Options> options) : IFileStorageService
+public sealed class R2FileStorageService(IR2ObjectClient objects, IOptions<R2Options> options,
+    ILogger<R2FileStorageService>? logger = null) : IFileStorageService
 {
     public static string Prefix(string kind, bool cover = false, bool freeVideo = false) =>
         cover ? "free/thumbnails" : freeVideo ? "free/videos" : kind switch
@@ -30,12 +31,35 @@ public sealed class R2FileStorageService(IR2ObjectClient objects, IOptions<R2Opt
     public async Task<MediaAccess?> GetAccessAsync(string storageKey, CancellationToken ct,
         DateTimeOffset? notAfter = null, bool protectedAccess = false)
     {
-        if (await objects.HeadAsync(storageKey, ct) is null) return null;
-        var now = DateTimeOffset.UtcNow;
-        var expires = now.AddMinutes(protectedAccess ? options.Value.ProtectedUrlMinutes : options.Value.PublicUrlMinutes);
-        if (notAfter.HasValue && notAfter.Value < expires) expires = notAfter.Value;
-        if (expires <= now) return null;
-        return new(null, await objects.PresignGetAsync(storageKey, expires), expires);
+        // Correlate failures without logging provider exceptions, object keys or signed URLs.
+        var reference = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(storageKey)))[..16];
+        try
+        {
+            if (await objects.HeadAsync(storageKey, ct) is null)
+            {
+                logger?.LogWarning("Media read failed Provider=R2 BucketName={BucketName} ObjectRef={ObjectRef} Code=OBJECT_NOT_FOUND HTTP=404",
+                    options.Value.BucketName, reference);
+                return null;
+            }
+            var now = DateTimeOffset.UtcNow;
+            var expires = now.AddMinutes(protectedAccess ? options.Value.ProtectedUrlMinutes : options.Value.PublicUrlMinutes);
+            if (notAfter.HasValue && notAfter.Value < expires) expires = notAfter.Value;
+            if (expires <= now) return null;
+            return new(null, await objects.PresignGetAsync(storageKey, expires), expires);
+        }
+        catch (MediaStorageUnavailableException error)
+        {
+            logger?.LogWarning("Media read failed Provider=R2 BucketName={BucketName} ObjectRef={ObjectRef} Code={StorageCode} HTTP={StorageStatus}",
+                options.Value.BucketName, reference, error.FailureCode, error.HttpStatus);
+            throw;
+        }
+        catch (ArgumentException)
+        {
+            logger?.LogWarning("Media read failed Provider=R2 BucketName={BucketName} ObjectRef={ObjectRef} Code=INVALID_OBJECT_KEY",
+                options.Value.BucketName, reference);
+            throw;
+        }
     }
 
     public string? ExistingPath(string storageKey) => null;

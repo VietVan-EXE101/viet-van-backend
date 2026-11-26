@@ -22,6 +22,9 @@ var setupAdmin = args.Contains("--setup-admin", StringComparer.OrdinalIgnoreCase
 var checkDatabaseReadOnly = args.Contains("--check-db-readonly", StringComparer.OrdinalIgnoreCase);
 var migrateMedia = args.Contains("--migrate-media-to-r2", StringComparer.OrdinalIgnoreCase);
 var testR2 = args.Contains("--test-r2", StringComparer.OrdinalIgnoreCase);
+var auditMediaStorage = args.Contains("--audit-media-storage-readonly", StringComparer.OrdinalIgnoreCase);
+var inspectMedia = args.FirstOrDefault(arg => arg.StartsWith("--inspect-drama-media=", StringComparison.OrdinalIgnoreCase));
+var restoreMedia = args.FirstOrDefault(arg => arg.StartsWith("--restore-missing-r2-media=", StringComparison.OrdinalIgnoreCase));
 var applyMediaMigration = args.Contains("--apply", StringComparer.OrdinalIgnoreCase);
 var testEmailIndex = Array.FindIndex(args, x => x.Equals("--test-email", StringComparison.OrdinalIgnoreCase));
 var testEmail = testEmailIndex >= 0;
@@ -31,6 +34,9 @@ var builder = WebApplication.CreateBuilder(args
         && !arg.Equals("--check-db-readonly", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--migrate-media-to-r2", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--test-r2", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--audit-media-storage-readonly", StringComparison.OrdinalIgnoreCase)
+        && !arg.StartsWith("--inspect-drama-media=", StringComparison.OrdinalIgnoreCase)
+        && !arg.StartsWith("--restore-missing-r2-media=", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--apply", StringComparison.OrdinalIgnoreCase)
         && index != testEmailIndex && (!testEmail || index != testEmailIndex + 1))
     .ToArray());
@@ -77,6 +83,23 @@ if (testEmail)
     return;
 }
 
+if (auditMediaStorage)
+{
+    Environment.ExitCode = await MediaStorageAudit.RunAsync(builder.Configuration, builder.Environment, Console.Out);
+    return;
+}
+if (inspectMedia is not null)
+{
+    Environment.ExitCode = await DramaMediaInspection.RunAsync(builder.Configuration, builder.Environment,
+        inspectMedia["--inspect-drama-media=".Length..], Console.Out);
+    return;
+}
+if (restoreMedia is not null)
+{
+    Environment.ExitCode = await DramaMediaRecovery.RunAsync(builder.Configuration, builder.Environment,
+        restoreMedia["--restore-missing-r2-media=".Length..], applyMediaMigration, Console.Out);
+    return;
+}
 if (testR2)
 {
     Environment.ExitCode = await R2SmokeCheck.RunAsync(builder.Configuration, builder.Environment, Console.Out);
@@ -253,11 +276,14 @@ if (app.Environment.IsDevelopment())
 if (renderDeployment)
 {
     app.UseForwardedHeaders();
-    if (app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<StorageOptions>>().Value.Provider.Equals("Local", StringComparison.OrdinalIgnoreCase))
-        app.Logger.LogWarning("Render dùng filesystem tạm thời. Đặt Storage__Provider=R2 sau khi cấu hình R2 và chuyển media; xem README.");
     if (emailProvider.Equals("Smtp", StringComparison.OrdinalIgnoreCase))
         app.Logger.LogWarning("Render Free chặn SMTP 25/465/587. Dùng Email__Provider=Resend để gửi qua HTTPS.");
 }
+var activeStorage = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<StorageOptions>>().Value;
+var activeBucket = activeStorage.Provider.Equals("R2", StringComparison.OrdinalIgnoreCase)
+    ? app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<VietVan.API.Services.Storage.R2Options>>().Value.BucketName : "none";
+app.Logger.LogInformation("Media storage configured Provider={StorageProvider} BucketName={BucketName} Environment={Environment} Render={Render}; no local fallback for R2.",
+    activeStorage.Provider, activeBucket, app.Environment.EnvironmentName, renderDeployment);
 if (app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Swagger:Enabled"))
 {
     app.UseSwagger();

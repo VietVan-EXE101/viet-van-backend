@@ -9,6 +9,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 ENV ASPNETCORE_ENVIRONMENT=Production \
     PORT=10000 \
+    Storage__Provider=R2 \
     Swagger__Enabled=true \
     Email__Provider=Resend
 EXPOSE 10000

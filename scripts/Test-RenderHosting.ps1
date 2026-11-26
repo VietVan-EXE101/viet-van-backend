@@ -16,7 +16,9 @@ $temporarySecret = [Convert]::ToBase64String($randomBytes)
 $overrides = @{
     ASPNETCORE_ENVIRONMENT = 'Production'; RENDER = 'true'; PORT = [string]$port
     # Smoke hosting không dùng R2 credentials thật hoặc gọi kho media.
-    Storage__Provider = 'Local'
+    Storage__Provider = 'R2'
+    R2__AccountId = ('a' * 32); R2__AccessKeyId = ('b' * 32); R2__SecretAccessKey = ('c' * 64)
+    R2__BucketName = 'smoke-private'; R2__ServiceUrl = ('https://' + ('a' * 32) + '.r2.cloudflarestorage.com')
     ConnectionStrings__DefaultConnection = "Server=tcp:sql.example.invalid,1433;Database=SmokeOnly;User Id=smoke;Password=$temporarySecret;Encrypt=True;TrustServerCertificate=False;Connection Timeout=1"
     Jwt__Key = $temporarySecret; Swagger__Enabled = 'true'; AllowedHosts = 'localhost;127.0.0.1'
     Cors__AllowedOrigins__0 = 'https://frontend.example.test'
