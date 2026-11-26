@@ -1,6 +1,7 @@
 namespace VietVan.API.Services.Implementations;
 
-public sealed class WorkCoverStorage(IWebHostEnvironment environment)
+public sealed class WorkCoverStorage(IWebHostEnvironment environment, IFileStorageService? storage = null,
+    Microsoft.Extensions.Options.IOptions<StorageOptions>? settings = null)
 {
     public const long MaxSize = 5 * 1024 * 1024;
     public record SavedCover(string PhysicalPath, string Url);
@@ -19,6 +20,12 @@ public sealed class WorkCoverStorage(IWebHostEnvironment environment)
         };
         if (expected is null || !string.Equals(file.ContentType, expected, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Chỉ chấp nhận ảnh JPEG, PNG hoặc WebP với loại nội dung phù hợp.");
+
+        if (settings?.Value.Provider.Equals("R2", StringComparison.OrdinalIgnoreCase) == true && storage is not null)
+        {
+            var saved = await storage.SaveAsync(0, "Background", file, extension, MaxSize, ct, "free/thumbnails/works");
+            return new SavedCover("r2:" + saved.StorageKey, "/api/media/work-covers/" + Path.GetFileName(saved.StorageKey));
+        }
 
         await using var input = file.OpenReadStream();
         var header = new byte[12];
@@ -45,5 +52,34 @@ public sealed class WorkCoverStorage(IWebHostEnvironment environment)
             return new SavedCover(path, $"/uploads/work-covers/{name}");
         }
         catch { if (File.Exists(path)) File.Delete(path); throw; }
+    }
+
+    public async Task DeleteAsync(string savedPath, CancellationToken ct = default)
+    {
+        if (savedPath.StartsWith("r2:", StringComparison.Ordinal))
+        {
+            if (storage is null) throw new InvalidOperationException("Storage chưa sẵn sàng.");
+            await storage.DeleteAsync(savedPath[3..], ct);
+            return;
+        }
+        var root = Path.GetFullPath(Path.Combine(environment.WebRootPath ?? Path.Combine(environment.ContentRootPath, "wwwroot"), "uploads", "work-covers"));
+        var candidate = Path.GetFullPath(savedPath);
+        if (!candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Đường dẫn bìa không hợp lệ.");
+        if (File.Exists(candidate)) File.Delete(candidate);
+    }
+
+    public Task DeleteByUrlAsync(string? url, CancellationToken ct = default)
+    {
+        if (url is null) return Task.CompletedTask;
+        var remotePrefix = "/api/media/work-covers/";
+        var localPrefix = "/uploads/work-covers/";
+        var remote = url.StartsWith(remotePrefix, StringComparison.Ordinal);
+        if (!remote && !url.StartsWith(localPrefix, StringComparison.Ordinal)) return Task.CompletedTask;
+        var name = url[(remote ? remotePrefix.Length : localPrefix.Length)..];
+        if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"^[a-f0-9]{32}\.(jpg|jpeg|png|webp)$"))
+            throw new ArgumentException("Tên bìa không hợp lệ.");
+        return DeleteAsync(remote ? "r2:free/thumbnails/works/0/" + name : Path.Combine(
+            environment.WebRootPath ?? Path.Combine(environment.ContentRootPath, "wwwroot"), "uploads", "work-covers", name), ct);
     }
 }

@@ -11,12 +11,13 @@ namespace VietVan.API.Services.Implementations;
 /// Dữ liệu kịch dùng các bảng riêng. Client chỉ đọc bản đã xuất bản;
 /// Admin sửa cảnh, gắn file và hotspot mà không phải thay đổi code frontend.
 /// </summary>
-public partial class DramaService(VietVanDbContext db, IWebHostEnvironment environment, IFileStorageService? fileStorage = null)
+public partial class DramaService(VietVanDbContext db, IWebHostEnvironment environment, IFileStorageService? fileStorage = null,
+    ILogger<DramaService>? logger = null)
 {
     private IFileStorageService Storage => fileStorage ?? new LocalFileStorageService(environment,
         Microsoft.Extensions.Options.Options.Create(new StorageOptions()));
     public const string CoverAssetTitle = "__vietvan_drama_cover__";
-    private static readonly Dictionary<string, (string Kind, string Mime)> MediaTypes =
+    internal static readonly Dictionary<string, (string Kind, string Mime)> MediaTypes =
         new(StringComparer.OrdinalIgnoreCase)
         {
             [".jpg"] = ("Image", "image/jpeg"), [".jpeg"] = ("Image", "image/jpeg"),
@@ -133,7 +134,7 @@ public partial class DramaService(VietVanDbContext db, IWebHostEnvironment envir
         {
             foreach (var asset in db.ChangeTracker.Entries<DramaAsset>().Where(x => x.Entity.Title == CoverAssetTitle))
             {
-                Storage.Delete(asset.Entity.RelativePath);
+                await Storage.DeleteAsync(asset.Entity.RelativePath);
             }
             throw;
         }
@@ -180,7 +181,7 @@ public partial class DramaService(VietVanDbContext db, IWebHostEnvironment envir
             if (result is not null)
             {
                 var asset = db.ChangeTracker.Entries<DramaAsset>().FirstOrDefault(x => x.Entity.Id == result.Id)?.Entity;
-                if (asset is not null) Storage.Delete(asset.RelativePath);
+                if (asset is not null) await Storage.DeleteAsync(asset.RelativePath);
             }
             throw;
         }
@@ -205,7 +206,7 @@ public partial class DramaService(VietVanDbContext db, IWebHostEnvironment envir
         }
         var fileType = MediaTypes[ext];
 
-        var stored = await Storage.SaveAsync(dramaId, kind, file, ext, MaxSizeFor(fileType.Kind), ct);
+        var stored = await Storage.SaveAsync(dramaId, kind, file, ext, MaxSizeFor(fileType.Kind), ct, VietVan.API.Services.Storage.R2FileStorageService.Prefix(kind, isCover, kind == "Video" && title == "FREE_VIDEO"));
         try
         {
             var asset = new DramaAsset
@@ -220,7 +221,7 @@ public partial class DramaService(VietVanDbContext db, IWebHostEnvironment envir
         }
         catch
         {
-            Storage.Delete(stored.StorageKey);
+            await Storage.DeleteAsync(stored.StorageKey);
             throw;
         }
     }
@@ -240,7 +241,7 @@ public partial class DramaService(VietVanDbContext db, IWebHostEnvironment envir
         db.DramaAssets.Remove(asset);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
-        Storage.Delete(asset.RelativePath);
+        await Storage.DeleteAsync(asset.RelativePath);
     }
 
     public async Task<DramaSceneDto> AddSceneAsync(int dramaId, DramaSceneRequest request)

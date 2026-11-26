@@ -15,6 +15,8 @@ $temporarySecret = [Convert]::ToBase64String($randomBytes)
 # No endpoint below accesses SQL, sends email, or processes a payment.
 $overrides = @{
     ASPNETCORE_ENVIRONMENT = 'Production'; RENDER = 'true'; PORT = [string]$port
+    # Smoke hosting không dùng R2 credentials thật hoặc gọi kho media.
+    Storage__Provider = 'Local'
     ConnectionStrings__DefaultConnection = "Server=tcp:sql.example.invalid,1433;Database=SmokeOnly;User Id=smoke;Password=$temporarySecret;Encrypt=True;TrustServerCertificate=False;Connection Timeout=1"
     Jwt__Key = $temporarySecret; Swagger__Enabled = 'true'; AllowedHosts = 'localhost;127.0.0.1'
     Cors__AllowedOrigins__0 = 'https://frontend.example.test'

@@ -1,0 +1,12 @@
+[
+  {
+    "AllowedOrigins": [
+      "http://localhost:3001",
+      "https://viet-van-backend.onrender.com"
+    ],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["Range", "Content-Type", "If-Range", "If-None-Match"],
+    "ExposeHeaders": ["Accept-Ranges", "Content-Range", "Content-Length", "Content-Type", "ETag", "Last-Modified"],
+    "MaxAgeSeconds": 3600
+  }
+]

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using VietVan.API.Services.Implementations;
 using VietVan.API.DTOs.Common;
 using VietVan.API.Services.Authentication;
+using VietVan.API.Services.Storage;
 
 namespace VietVan.API.Middlewares;
 
@@ -43,6 +44,8 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
 
     private static (int Status, string Message, string? Code) Classify(Exception ex)
     {
+        if (ex is MediaStorageUnavailableException)
+            return (503, "Kho media tạm thời không truy cập được.", "MEDIA_STORAGE_UNAVAILABLE");
         if (ex is PasswordResetNotConfiguredException)
             return (503, "Chức năng đặt lại mật khẩu tạm thời chưa sẵn sàng.", "PASSWORD_RESET_NOT_CONFIGURED");
         var (status, message) = ex switch

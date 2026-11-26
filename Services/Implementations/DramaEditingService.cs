@@ -8,6 +8,41 @@ namespace VietVan.API.Services.Implementations;
 
 public partial class DramaService
 {
+    public async Task<DramaAssetDto> ReplaceFileAsync(int dramaId, int assetId, IFormFile file, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await DatabaseLocks.DramaAsync(db, dramaId, ct);
+        await PreserveSnapshotAsync(dramaId);
+        await EnsureAssetMutableAsync(dramaId, assetId, false, ct);
+        var asset = await db.DramaAssets.SingleOrDefaultAsync(a => a.Id == assetId && a.DramaProductionId == dramaId, ct)
+            ?? throw new KeyNotFoundException("Không tìm thấy asset.");
+        var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (!MediaTypes.TryGetValue(extension, out var type)) throw new UploadException(415, "Định dạng file không hỗ trợ.");
+        if (file.Length == 0) throw new ArgumentException("File rỗng.");
+        try { ValidateUpload(file, asset.Kind, extension); }
+        catch (ArgumentException) { throw new UploadException(file.Length > MaxSizeFor(type.Kind) ? 413 : 415, "Định dạng, MIME hoặc kích thước không hợp lệ."); }
+        if (asset.Title == CoverAssetTitle && (extension == ".gif" || file.Length > WorkCoverStorage.MaxSize))
+            throw new UploadException(extension == ".gif" ? 415 : 413, "Bìa dùng JPG/PNG/WebP, tối đa 5 MiB.");
+        var drama = await FindDramaAsync(dramaId);
+        var oldKey = asset.RelativePath;
+        var saved = await Storage.SaveAsync(dramaId, asset.Kind, file, extension, MaxSizeFor(type.Kind), ct,
+            VietVan.API.Services.Storage.R2FileStorageService.Prefix(asset.Kind, asset.Title == CoverAssetTitle, drama.FreeVideoAssetId == assetId));
+        try
+        {
+            asset.RelativePath = saved.StorageKey; asset.OriginalFileName = saved.OriginalName;
+            asset.ContentType = type.Mime; asset.SizeBytes = saved.SizeBytes;
+            await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        }
+        catch { await Storage.DeleteAsync(saved.StorageKey); throw; }
+        // Chỉ xóa khóa cũ sau commit và khi không còn asset nào dùng chung khóa.
+        if (!await db.DramaAssets.AnyAsync(a => a.RelativePath == oldKey, ct))
+        {
+            try { await Storage.DeleteAsync(oldKey); }
+            catch (Exception ex) { logger?.LogWarning("Không dọn được file asset cũ. AssetId={AssetId} ErrorType={ErrorType}", assetId, ex.GetType().Name); }
+        }
+        return ToAsset(asset);
+    }
+
     public async Task<object> ListAssetsAsync(int id, CancellationToken ct)
     {
         await FindDramaAsync(id);
@@ -67,7 +102,7 @@ public partial class DramaService
             if (saved is not null)
             {
                 var asset = db.ChangeTracker.Entries<DramaAsset>().FirstOrDefault(a => a.Entity.Id == saved.Id)?.Entity;
-                if (asset is not null) Storage.Delete(asset.RelativePath);
+                if (asset is not null) await Storage.DeleteAsync(asset.RelativePath);
             }
             throw;
         }
@@ -99,7 +134,7 @@ public partial class DramaService
             }
             await tx.CommitAsync(ct); return result;
         }
-        catch { foreach (var key in keys) Storage.Delete(key); throw; }
+        catch { foreach (var key in keys) await Storage.DeleteAsync(key); throw; }
     }
 
     public async Task<object> MetadataAsync(int id, int assetId, AssetMetadataRequest request, CancellationToken ct)

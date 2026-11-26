@@ -4,16 +4,30 @@ namespace VietVan.API.Services.Implementations;
 
 public sealed class StorageOptions
 {
+    public string Provider { get; set; } = "Local";
     public string RootPath { get; set; } = "PrivateMedia";
 }
 
 public sealed record StoredFile(string StorageKey, string OriginalName, long SizeBytes);
+public sealed record MediaAccess(string? LocalPath, string? Url, DateTimeOffset? ExpiresAt);
 
 public interface IFileStorageService
 {
-    Task<StoredFile> SaveAsync(int dramaId, string kind, IFormFile file, string extension, long limit, CancellationToken ct);
+    Task<StoredFile> SaveAsync(int dramaId, string kind, IFormFile file, string extension, long limit, CancellationToken ct, string? prefix = null);
     string? ExistingPath(string storageKey);
     void Delete(string storageKey);
+    Task DeleteAsync(string storageKey, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        Delete(storageKey);
+        return Task.CompletedTask;
+    }
+    Task<MediaAccess?> GetAccessAsync(string storageKey, CancellationToken ct, DateTimeOffset? notAfter = null, bool protectedAccess = false)
+    {
+        ct.ThrowIfCancellationRequested();
+        var path = ExistingPath(storageKey);
+        return Task.FromResult<MediaAccess?>(path is null ? null : new(path, null, null));
+    }
 }
 
 public sealed class LocalFileStorageService : IFileStorageService
@@ -34,7 +48,7 @@ public sealed class LocalFileStorageService : IFileStorageService
         return path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && File.Exists(path) ? path : null;
     }
 
-    public async Task<StoredFile> SaveAsync(int dramaId, string kind, IFormFile file, string extension, long limit, CancellationToken ct)
+    public async Task<StoredFile> SaveAsync(int dramaId, string kind, IFormFile file, string extension, long limit, CancellationToken ct, string? prefix = null)
     {
         // Các thành phần đường dẫn do server sinh, không nhận storageKey từ client.
         var key = $"drama-assets/{dramaId}/{kind.ToLowerInvariant()}/{Guid.NewGuid():N}{extension}";

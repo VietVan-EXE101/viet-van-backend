@@ -20,12 +20,18 @@ using VietVan.API.Hosting;
 
 var setupAdmin = args.Contains("--setup-admin", StringComparer.OrdinalIgnoreCase);
 var checkDatabaseReadOnly = args.Contains("--check-db-readonly", StringComparer.OrdinalIgnoreCase);
+var migrateMedia = args.Contains("--migrate-media-to-r2", StringComparer.OrdinalIgnoreCase);
+var testR2 = args.Contains("--test-r2", StringComparer.OrdinalIgnoreCase);
+var applyMediaMigration = args.Contains("--apply", StringComparer.OrdinalIgnoreCase);
 var testEmailIndex = Array.FindIndex(args, x => x.Equals("--test-email", StringComparison.OrdinalIgnoreCase));
 var testEmail = testEmailIndex >= 0;
 var testRecipient = testEmail && testEmailIndex + 1 < args.Length ? args[testEmailIndex + 1] : null;
 var builder = WebApplication.CreateBuilder(args
     .Where((arg, index) => !arg.Equals("--setup-admin", StringComparison.OrdinalIgnoreCase)
         && !arg.Equals("--check-db-readonly", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--migrate-media-to-r2", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--test-r2", StringComparison.OrdinalIgnoreCase)
+        && !arg.Equals("--apply", StringComparison.OrdinalIgnoreCase)
         && index != testEmailIndex && (!testEmail || index != testEmailIndex + 1))
     .ToArray());
 var renderDeployment = DeploymentConfiguration.IsRender(builder.Configuration);
@@ -71,6 +77,16 @@ if (testEmail)
     return;
 }
 
+if (testR2)
+{
+    Environment.ExitCode = await R2SmokeCheck.RunAsync(builder.Configuration, builder.Environment, Console.Out);
+    return;
+}
+if (migrateMedia)
+{
+    Environment.ExitCode = await MediaMigration.RunAsync(builder.Configuration, builder.Environment, applyMediaMigration, Console.Out);
+    return;
+}
 if (checkDatabaseReadOnly)
 {
     Environment.ExitCode = await DatabaseReadOnlyCheck.RunAsync(builder.Configuration, builder.Environment, Console.Out);
@@ -121,8 +137,7 @@ builder.Services.AddScoped<GoogleAccountService>();
 builder.Services.AddScoped<DramaPlatformService>();
 builder.Services.AddScoped<FeedbackService>();
 builder.Services.AddScoped<AdminPlatformService>();
-builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
-builder.Services.AddScoped<IFileStorageService, LocalFileStorageService>();
+builder.Services.AddMediaStorage(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IAuthorizationHandler, ProAuthorizationHandler>();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => {
     // Exact origins (without paths); Development adds localhost:3001 in its JSON config.
@@ -238,7 +253,8 @@ if (app.Environment.IsDevelopment())
 if (renderDeployment)
 {
     app.UseForwardedHeaders();
-    app.Logger.LogWarning("Render dùng filesystem tạm thời. Media upload cần storage bền vững trước khi sử dụng lâu dài; xem README. Không tự di chuyển hoặc xóa media hiện có.");
+    if (app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<StorageOptions>>().Value.Provider.Equals("Local", StringComparison.OrdinalIgnoreCase))
+        app.Logger.LogWarning("Render dùng filesystem tạm thời. Đặt Storage__Provider=R2 sau khi cấu hình R2 và chuyển media; xem README.");
     if (emailProvider.Equals("Smtp", StringComparison.OrdinalIgnoreCase))
         app.Logger.LogWarning("Render Free chặn SMTP 25/465/587. Dùng Email__Provider=Resend để gửi qua HTTPS.");
 }

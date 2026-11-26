@@ -89,6 +89,12 @@ public class AdminDramasController(DramaService dramaService, DramaPlatformServi
     public Task<IActionResult> DeleteAsset(int dramaId, int assetId) =>
         HandleDelete(() => dramaService.DeleteAssetAsync(dramaId, assetId));
 
+    [HttpPut("{dramaId:int}/assets/{assetId:int}/file"), Consumes("multipart/form-data"), UploadRequest]
+    [EnableRateLimiting("drama-upload")]
+    [RequestSizeLimit(211_812_352), RequestFormLimits(MultipartBodyLengthLimit = 211_812_352)]
+    public Task<DramaAssetDto> ReplaceFile(int dramaId, int assetId, IFormFile file, CancellationToken ct) =>
+        dramaService.ReplaceFileAsync(dramaId, assetId, file, ct);
+
     [HttpPost("{dramaId:int}/scenes")]
     [Obsolete("Lưu toàn bộ cấu hình qua PUT manifest.")]
     public Task<IActionResult> CreateScene(int dramaId, [FromBody] DramaSceneRequest request) =>

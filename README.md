@@ -1,6 +1,168 @@
 # viet-van-backend
 Backend API for Viet Van Platform
 
+## Cloudflare R2 private storage
+
+Tích hợp .NET 8, `AWSSDK.S3` 4.0.104.12 và `AWSSDK.Core` 4.0.103 được cố định phiên bản để tránh dependency không hỗ trợ .NET 8, bucket private `vietvan-media`. Xem dependency chính thức [S3 4.0.104.12](https://www.nuget.org/packages/AWSSDK.S3/4.0.104.12) và [Core 4.0.103](https://www.nuget.org/packages/AWSSDK.Core/4.0.103). Không sửa FE, auth/Google/SePay hoặc Connection String. Bộ khóa xuất hiện trong ảnh cần được thu hồi và thay bằng khóa mới; không dùng hoặc đưa chúng vào source, log, README hay lệnh shell có chứa secret.
+
+### Cấu hình local và Render
+
+Mặc định runtime vẫn `Storage:Provider=Local` nếu chưa cấu hình. Để dùng R2, nhập các biến dưới đây trên Render → Environment rồi Save and deploy:
+
+| Biến | Giá trị |
+|---|---|
+| `Storage__Provider` | `R2` |
+| `R2__AccountId` | Cloudflare Account ID |
+| `R2__AccessKeyId` | Access Key ID mới, quyền Object Read & Write cho riêng bucket |
+| `R2__SecretAccessKey` | Secret Access Key mới |
+| `R2__BucketName` | `vietvan-media` |
+| `R2__ServiceUrl` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `R2__PublicUrlMinutes` | `60`, tùy chọn 1–120 |
+| `R2__ProtectedUrlMinutes` | `5`, tùy chọn 1–15 |
+
+Không nhập token Cloudflare quản trị vào SecretAccessKey. R2 dùng cặp S3 credentials. Endpoint chỉ chấp nhận HTTPS của đúng Account ID, không kèm tên bucket hoặc đường dẫn. Giữ nguyên `ConnectionStrings__DefaultConnection` Somee hiện có. `Storage__RootPath` vẫn chỉ đường dẫn local, không phải R2 endpoint.
+
+Local dùng User Secrets hoặc chèn hai section **ở cấp gốc** vào file `appsettings.Local.json` đã bị ignore; giữ nguyên các section/Connection String đang có:
+
+```json
+"Storage": { "Provider": "R2", "RootPath": "PrivateMedia" },
+"R2": {
+  "AccountId": "REPLACE_ACCOUNT_ID",
+  "AccessKeyId": "REPLACE_NEW_ACCESS_KEY_ID",
+  "SecretAccessKey": "REPLACE_NEW_SECRET_ACCESS_KEY",
+  "BucketName": "vietvan-media",
+  "ServiceUrl": "https://REPLACE_ACCOUNT_ID.r2.cloudflarestorage.com",
+  "PublicUrlMinutes": 60,
+  "ProtectedUrlMinutes": 5
+}
+```
+
+Đây là phần chèn vào JSON hiện có, không phải nội dung để ghi đè cả file. Với User Secrets dùng tên key dạng `R2:AccountId`, `R2:AccessKeyId`, `R2:SecretAccessKey`, `R2:BucketName`, `R2:ServiceUrl`, `Storage:Provider`. Cấu hình có hiệu lực của ASP.NET Core (CLI/env/User Secrets/JSON chuẩn) ưu tiên hơn file Local fallback. File Local chỉ được nạp khi Development và không phải Render; Production dùng env. Không in file cấu hình thật để chẩn đoán.
+
+S3 client sử dụng `ServiceURL`, `AuthenticationRegion="auto"`, `ForcePathStyle=true`. Theo hướng dẫn R2 .NET, PUT dùng `DisablePayloadSigning=true`, `DisableDefaultChecksumValidation=true`, `UseChunkEncoding=false`; checksum policy của SDK chỉ bật khi bắt buộc để tránh streaming trailers R2 không hỗ trợ. Request vẫn được SDK ký SigV4, chỉ gửi qua HTTPS; file migration được kiểm chứng SHA-256 bằng đọc lại byte trên R2. Không tự triển khai thuật toán ký. Xem [R2 .NET](https://developers.cloudflare.com/r2/examples/aws/aws-sdk-net/) và [S3 compatibility](https://developers.cloudflare.com/r2/api/s3/api/).
+
+### Upload, đọc và thay thế media
+
+Các POST multipart hiện có giữ nguyên: `kind/title/file` hoặc `assetType/files` cho thư viện asset; `file` cho video/bìa; `coverImage` khi tạo tác phẩm/kịch. Ảnh asset 10 MiB, audio 30 MiB, video 200 MiB, bìa/avatar 5 MiB. Giữ kiểm tra đuôi, MIME, signature và byte count; GIF asset vẫn là `image/gif`, giữ nguyên toàn bộ frame/timing/loop. Avatar và bìa chỉ JPG/JPEG, PNG, WebP như phạm vi hiện có. File staging có tên GUID trong temp, đọc/ghi theo buffer 80 KiB và dọn khi thành công hoặc lỗi; không giữ media lâu dài trên Render.
+
+Key mới được tạo tự động theo `free/videos/`, `free/thumbnails/`, `pro/characters/`, `pro/backgrounds/`, `pro/audio/`, `pro/assets/`, `users/avatars/`; có ID/GUID tránh trùng. Prefix không quyết định quyền: Backend vẫn kiểm tra trạng thái kịch, JWT và subscription từ DB. Bucket giữ private; không cần tạo folder thủ công hoặc bật public access.
+
+| API | Chức năng |
+|---|---|
+| `POST /api/admin/dramas/{id}/assets` | Upload asset đơn/nhiều file, giữ multipart hiện tại |
+| `POST /api/admin/dramas/{id}/video` | Upload/thay video FREE bằng ID asset mới như luồng hiện có |
+| `POST /api/admin/dramas/{id}/cover` | Upload/thay bìa kịch, giữ snapshot cũ |
+| `PUT /api/admin/dramas/{id}/assets/{assetId}/file` | Thay file giữ ID của asset có thể chỉnh sửa; field `file`; từ chối asset trong snapshot đã xuất bản |
+| `DELETE /api/admin/dramas/{id}/assets/{assetId}` | Xóa asset theo guard tham chiếu hiện có |
+| `GET /api/dramas/{id}/video` | Local trả file/range; R2 trả 302 tới presigned GET sau kiểm tra quyền |
+| `GET /api/dramas/{id}/video/access` | JSON URL video FREE và hạn dùng |
+| `GET /api/dramas/{id}/assets/{assetId}/access` | JSON URL asset, kiểm tra quyền giống `/media` |
+| `GET /api/dramas/{id}/assets/{assetId}/media` | Giữ URL API cũ; Local trả file, R2 redirect |
+| `GET /api/admin/dramas/{id}/assets/{assetId}/access` | Admin lấy JSON URL, kể cả draft |
+| `GET /api/admin/dramas/{id}/assets/{assetId}/media` | Admin tải file/redirect |
+| `POST /api/admin/works` | Tạo tác phẩm với `coverImage`, giữ contract hiện có |
+| `POST /api/admin/works/{id}/cover` | Thay bìa tác phẩm, field `file` |
+| `DELETE /api/admin/works/{id}/cover` | Gỡ bìa và dọn file riêng khi không còn tham chiếu |
+| `GET /api/media/work-covers/{fileName}` | URL bìa ổn định trong metadata, redirect R2 cho tác phẩm active |
+| `POST /api/users/me/avatar` | Upload/thay avatar của chính JWT user, field `file` |
+| `GET /api/users/me/avatar` | JSON URL avatar của chính user |
+| `GET /api/users/me/avatar/media` | File/redirect avatar của chính user |
+| `DELETE /api/users/me/avatar` | Xóa avatar của chính user |
+
+Không lưu URL đã ký vào DB. DramaAssets.RelativePath giữ object key, các trường filename/MIME/size hiện có giữ nguyên. Bìa tác phẩm lưu URL API ổn định, suy ra key server-side. Avatar dùng metadata `UserAvatars` (UserId, ObjectKey, FileName, ContentType, FileSize, UpdatedAt), không thêm cột vào Users nên không làm truy vấn login phụ thuộc cột mới. Chỉ để bật avatar: sao lưu, xem trước rồi áp dụng `scripts/Upgrade_User_Avatars.sql` với `@ApplyChanges=1`; không gọi script khi startup. Thiếu bảng chỉ làm API avatar báo schema 503. Các API kịch khác không cần bảng avatar.
+
+### FE nhận presigned URL
+
+Ví dụ JSON từ `/access`:
+
+```json
+{ "url": "https://<R2_ENDPOINT>/<BUCKET>/<KEY>?<SIGNATURE>",
+  "expiresAt": "2026-11-26T12:05:00+00:00", "contentType": "image/gif", "sizeBytes": 12345 }
+```
+
+FE gọi API Backend bằng JWT rồi gán `url` cho img/video/audio. GET R2 dùng URL nguyên vẹn, không thêm Bearer JWT, không gửi cookie Google và không bỏ/đổi query signature. Ví dụ tích hợp (hướng dẫn, không sửa source FE):
+
+```javascript
+const res = await fetch(`${API_BASE}/api/dramas/22/video/access`, {
+  headers: { Authorization: `Bearer ${token}` }
+});
+if (!res.ok) throw new Error(`Media access: ${res.status}`);
+const media = await res.json();
+video.src = media.url;
+// Cấp lại URL trước expiresAt, giữ currentTime/play state khi đổi nguồn.
+```
+
+API `/media` và `/video` cũ trả 302 khi R2 hoạt động; client theo redirect tự động hoặc dùng `/access` nếu cần URL/hạn dùng rõ ràng. Backend không proxy byte video/audio. HTTP Range do R2 xử lý trên presigned GET. URL PRO mặc định 5 phút và bị giới hạn tới thời điểm hết quyền subscription; FE nên xin lại URL trước hạn khoảng 30–60 giây. Backend kiểm tra quyền lại ở mỗi lần cấp; URL đã cấp vẫn dùng được tới hạn ngay cả khi tài khoản bị khóa/thu hồi gói giữa chừng. Muốn thu hồi tức thời mọi request cần cơ chế proxy khác; không tuyên bố signed URL có khả năng thu hồi tức thời. URL Admin draft cũng dùng hạn ngắn khi lấy qua luồng asset PRO.
+
+### CORS bucket private
+
+R2 → bucket vietvan-media → Settings → CORS Policy, nhập nội dung `configuration/R2_CORS.example.json`. Thêm đúng origin HTTPS của FE đã deploy vào AllowedOrigins; file mẫu có localhost:3001 và Backend Render để Swagger/trang demo gọi được. CORS chỉ cho GET/HEAD và các header Range cần thiết; không bật public bucket. Xem [R2 CORS](https://developers.cloudflare.com/r2/buckets/cors/) và [presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/). Đừng gọi HEAD lên URL đã ký cho GET: phương thức HTTP nằm trong chữ ký.
+
+### Chuyển media cũ, giữ nguyên ID
+
+Trên máy đang còn PrivateMedia và wwwroot/uploads/work-covers, cấu hình Somee hiện có và R2 bằng khóa mới. Sao lưu DB trước apply và dừng các thao tác chỉnh sửa/upload từ Admin trong lúc chuyển. Không import lại DB hoặc chạy baseline.
+
+```powershell
+dotnet restore VietVan.API.csproj -p:NuGetAudit=false
+dotnet build VietVan.API.csproj
+# Chỉ đọc DB/file local; không cần khóa R2, không gọi R2.
+dotnet run --launch-profile http -- --migrate-media-to-r2
+# Đọc kế hoạch và các dòng FAIL trước khi áp dụng.
+dotnet run --launch-profile http -- --migrate-media-to-r2 --apply
+```
+
+Tool chỉ chuyển file được DramaAssets/LiteraryWorks tham chiếu; file local không tham chiếu được giữ nguyên. Key đích xác định theo ID và filename gốc, không dùng GUID mới mỗi lần migration. PUT có If-None-Match:*; object có sẵn phải khớp size/MIME/SHA-256 khi đọc lại, nếu khác thì không ghi đè và không cập nhật DB. Chỉ sau xác minh mới CAS UPDATE RelativePath/CoverImageUrl của bản ghi chưa bị sửa đồng thời. Không đổi ID, scene/hotspot/manifest, giá gói, user hoặc Connection String; không xóa local hoặc remote object cũ. Tool có thể hoàn tất một phần khi một số file lỗi; trả exit code 1 và liệt kê ID cần xử lý, có thể chạy lại. Các asset đã có R2 key được HEAD kiểm tra, không upload lại. Dừng/chạy lại an toàn nếu upload đã xong nhưng chưa cập nhật DB.
+
+Sau khi chuyển, cấu hình Render Storage__Provider=R2 cùng khóa mới và deploy source mới. Giữ appsettings.Local.json ở ngoài Git/Docker. Khi dùng cùng Somee đã đổi RelativePath sang R2 key, local runtime cũng cần chọn R2 để xem media; bản database local dự phòng không bị công cụ đụng tới.
+
+### Kiểm tra thật sau khi nhập khóa mới
+
+```powershell
+dotnet run --launch-profile http -- --test-r2
+```
+
+Lệnh chỉ upload một GIF thử vào key GUID riêng dưới pro/assets/_diagnostics, xác minh HEAD và hash byte gốc, tạo URL GET 1 phút, thử Range 0–5 phải trả 206/image/gif rồi xóa đúng object thử. Không in URL đã ký hoặc secret, không sửa DB/media hiện có. Nếu mạng lỗi khi cleanup, kiểm tra/xóa object thử còn lại trong bucket. Các kiểm tra permission Free/PRO dùng HTTP test fixture, không thử mua gói/chuyển tiền thật.
+
+Nếu thiếu cấu hình, lệnh liệt kê **tên key** như `R2:AccessKeyId`, không in giá trị. Khi có lỗi kết nối, output có `Step`, `Code` và HTTP status nếu nhận được response: `TLS_ERROR`/`NETWORK_ERROR` là nhóm lỗi kết nối; `ACCESS_DENIED` cần kiểm tra quyền Object Read & Write cho bucket; `INVALID_ACCESS_KEY`/`SIGNATURE_MISMATCH` cần kiểm tra cặp S3 credentials; `BUCKET_NOT_FOUND` cần đối chiếu bucket/account; `CLOCK_SKEW` cần kiểm tra giờ máy. Không gửi secret hoặc signed URL trong ảnh log. Chỉ có `PASS upload` mới chứng minh đã upload thành công; cấu hình đúng định dạng chưa chứng minh khóa được Cloudflare chấp nhận.
+
+Với upload lớn hơn khả năng Render, hướng tiếp theo là direct upload ba bước: Backend cấp PUT tới key tạm gắn user/Admin; FE PUT trực tiếp R2; Backend finalize bằng HEAD/đọc signature, kiểm tra size/MIME/quyền rồi mới tạo metadata. **Các endpoint direct upload này chưa được triển khai**; multipart hiện tại vẫn hoạt động trong giới hạn 200 MiB. Không cấp PUT tùy ý rồi tin metadata FE gửi lên.
+
+R2 không sửa lỗi schema Somee đã xác nhận: DramaScenes thiếu 8 cột, DramaHotspots thiếu 13 cột, CulturalInsightViews thiếu/không nhìn thấy. Công cụ migration media không truy vấn các cột scene này, nhưng xem tương tác/publish legacy vẫn cần chuyển đổi schema dựa trên kết quả Diagnose_Drama_Schema.sql. Không coi tích hợp R2 là đã sửa xong schema kịch.
+
+### File thay đổi và tình trạng kiểm thử R2
+
+| Nhóm | File |
+|---|---|
+| Dependency/cấu hình | `VietVan.API.csproj`, `.env.example`, `Program.cs`, `Hosting/MediaStorageConfiguration.cs` |
+| Storage | `Services/Storage/R2Options.cs`, `R2ObjectClient.cs`, `R2FileStorageService.cs`, `MediaUploadStage.cs`; `Services/Implementations/FileStorageService.cs`, `WorkCoverStorage.cs` |
+| API/nghiệp vụ media | `Controllers/DramaAccessController.cs`, `Controllers/Admin/AdminDramasController.cs`, `AdminWorksController.cs`, `AdminWorkMediaController.cs`, `Controllers/MediaImagesController.cs`; `Services/Implementations/DramaService.cs`, `DramaEditingService.cs`; `Middlewares/ApiExceptionMiddleware.cs` |
+| Metadata avatar | `Entities/UserAvatar.cs`, `Data/VietVanDbContext.cs`, `scripts/Upgrade_User_Avatars.sql` |
+| Công cụ/tài liệu/test | `Hosting/MediaMigration.cs`, `Hosting/R2SmokeCheck.cs`, `configuration/R2_CORS.example.json`, `tests/VietVan.Payment.Tests/R2StorageTests.cs`, `R2MediaAuthorizationTests.cs`, `scripts/Test-RenderHosting.ps1`, `README.md` |
+
+Kiểm tra tĩnh đã thực hiện: `git diff --check` không có lỗi whitespace; CORS JSON parse hợp lệ; script avatar được `TSql150Parser` kiểm tra với 0 lỗi cú pháp; `appsettings.Local.json` được Git ignore. Chưa chạy script SQL, chưa upload/chuyển/xóa object R2 và chưa đổi dữ liệu Somee.
+
+**Kết quả bản cuối ngày 26/11/2026:** người dùng đã restore thành công tại Terminal; assets xác nhận đúng hai phiên bản SDK 4.0 nêu trên, không còn System.IO.Hashing 11. Build và publish Release thành công. **216/216 test đạt, 0 bỏ qua**, báo cáo `tests/VietVan.Payment.Tests/TestResults/r2-configuration-diagnostics.trx`, gồm kiểm tra chẩn đoán không lộ secret. Không còn cảnh báo dependency; máy dùng SDK .NET 11 preview để build target net8.0, Dockerfile vẫn dùng SDK/runtime 8.0. Các action upload mới hoạt động với Swagger và vẫn nhận multipart field `file`.
+
+Publish output tại `artifacts/r2-publish` không chứa Local/Development settings hoặc media local. `scripts/Test-RenderHosting.ps1` đạt **5/5 kiểm tra HTTP**: PORT/health không truy cập DB, Swagger Production, HTTPS proxy + credentialed CORS đúng origin, Google challenge cookie + từ chối token sai, SePay từ chối API key sai. Dùng cấu hình giả và Storage Local riêng cho smoke hosting; không truy cập Somee/R2 thật, không gửi email/chuyển tiền. Không có Docker CLI nên chưa build image.
+
+**Kiểm tra bucket thật đã đạt:** Terminal người dùng ngày 26/11/2026 chạy `--test-r2` và xác nhận đủ 4 dòng PASS: upload object mới; HEAD/SHA-256 byte gốc; presigned GET/HTTP Range 206; xóa object thử. Đây là kết quả do người dùng trực tiếp chạy bằng cấu hình local, không phải kiểm tra trên Render. **Chưa chuyển media cũ hoặc thay dữ liệu Somee.** Bước tiếp theo là dry-run `--migrate-media-to-r2`, đối chiếu kế hoạch/file thiếu trước khi apply.
+
+**Dry-run media cũ đã đạt:** log Terminal người dùng có 91 dòng PLAN asset, không có FAIL hoặc SKIP; `moved=0; skipped=0; failed=0` đúng vì chưa apply. Kịch 22 có 76 asset, kịch 23 có 15 asset. Đối chiếu file local hiện tại thấy đủ 91 file, tổng 287840506 byte (274,51 MiB), gồm 8 GIF và 2 video. Phân bổ đích: 2 free/thumbnails, 2 free/videos, 9 pro/backgrounds, 42 pro/characters, 18 pro/assets, 18 pro/audio. Không có PLAN work trong log này, nên không kết luận bìa tác phẩm đã được kiểm tra/chuyển. Trước apply cần sao lưu DB và media, tạm dừng Admin upload/chỉnh sửa; Render phải có source và env R2 để đọc các key sau khi chuyển. Chưa xác nhận apply hoàn tất.
+
+Các lệnh để chạy lại:
+
+```powershell
+dotnet restore tests/VietVan.Payment.Tests/VietVan.Payment.Tests.csproj -p:NuGetAudit=false
+dotnet build VietVan.API.csproj -c Release --no-restore
+dotnet test tests/VietVan.Payment.Tests/VietVan.Payment.Tests.csproj -c Release --no-restore
+dotnet publish VietVan.API.csproj -c Release --no-restore -o artifacts/r2-publish /p:UseAppHost=false
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-RenderHosting.ps1 -PublishDirectory artifacts/r2-publish
+# Nếu đã cài Docker:
+docker build -t vietvan-api:r2 .
+```
+
+Các test mới kiểm tra byte GIF, MIME/signature/size, key traversal, SDK ký offline với khóa giả, migration dry-run/rerun/conflict, HTTP cấp URL theo publish/Admin/PRO và hạn subscription, thay file giữ ID và guard snapshot, thay/xóa bìa tác phẩm và avatar riêng từng user. Smoke R2 thật với GIF đã đạt theo Terminal người dùng; cần thử MP4/video seek và CORS trên trình duyệt sau deploy. Không tự push GitHub. Dockerfile Path vẫn `./Dockerfile`, Root Directory để trống (repo root).
+
 ## SQL Server Somee đã import dữ liệu
 
 Runtime chỉ dùng khóa **`ConnectionStrings:DefaultConnection`** qua `DeploymentConfiguration.SqlConnection()` trong `Program.cs`, được inject vào `VietVanDbContext`. DbContext không có `OnConfiguring` tự trỏ sang database khác; service nghiệp vụ dùng chung DbContext này. Không sửa Entity/DTO/Controller, migration hoặc dữ liệu để đổi host.
@@ -200,19 +362,19 @@ Tham khảo [hướng dẫn webhook SePay](https://docs.sepay.vn/tich-hop-webhoo
 
 ### 7. Media: giới hạn hiện tại và phương án bền vững
 
-**Storage hiện tại vẫn là local filesystem, chưa tích hợp object storage.** Render Free mất file ghi lúc runtime khi restart/redeploy/sleep và không hỗ trợ persistent disk miễn phí. Không dùng file local trên Render làm bản duy nhất. Xem [giới hạn Render Free](https://render.com/docs/free).
+**Source có adapter Cloudflare R2; cần cấu hình và chuyển media cũ theo mục Cloudflare R2 ở đầu tài liệu.** Mặc định chưa cấu hình vẫn dùng local filesystem. Render Free dùng filesystem tạm; không dùng file local trên Render làm bản duy nhất. Xem [giới hạn Render Free](https://render.com/docs/free).
 
 Hai nơi cần lưu bền vững là `PrivateMedia/drama-assets/` (video/audio/ảnh/GIF/asset tương tác, được API kiểm tra quyền) và `wwwroot/uploads/work-covers/` (cover tác phẩm). Chúng đã được loại khỏi Docker context/publish output; **file gốc trong workspace và metadata database không bị xóa hoặc đổi đường dẫn**. Lần rà soát ghi nhận 95 file private khoảng 291 MB và 6 cover khoảng 5,9 MB. Các asset đó không tự xuất hiện trong container mới.
 
 Phương án đề xuất cho demo có hạn mức miễn phí: bucket private trên [Cloudflare R2 Standard](https://developers.cloudflare.com/r2/pricing/) hoặc một S3-compatible storage đã có. R2 hiện có quota Standard miễn phí nhưng có thể tính phí khi vượt hạn mức; tự xem điều kiện tài khoản/billing trước khi đăng ký. Không tự mở dịch vụ hoặc bật thanh toán.
 
-Để triển khai storage mà vẫn giữ API contract, bước tiếp theo cần làm trước khi coi upload trên Render là bền vững:
+Các bước vận hành trước khi chuyển nguồn đọc sang R2:
 
 1. Sao lưu database và cả hai thư mục media; kiểm tra số lượng, tổng byte và SHA-256 trước/sau copy. Dùng copy, không move/xóa file gốc.
-2. Copy lên bucket bằng key giữ nguyên `RelativePath` của `DramaAssets`; chuẩn bị mapping cover riêng. Không thay URL metadata hàng loạt theo phỏng đoán.
-3. Thêm adapter storage cho upload/read/delete bất đồng bộ, hỗ trợ streaming/range. API media vẫn kiểm tra JWT/PRO/Admin trước khi lấy object; bucket không public, credential chỉ ở BE. Giữ nguyên byte, MIME và GIF động.
-4. Hiện `IFileStorageService.ExistingPath()`/`PhysicalFile()` và `WorkCoverStorage` chỉ hiểu đường dẫn local. **Chỉ nhập bucket URL vào `Storage__RootPath` hoặc chỉ copy file lên R2 sẽ chưa làm API đọc được object storage.** Cần adapter và test trước khi chuyển lưu trữ.
-5. Sau khi test upload/tải lại và khôi phục qua redeploy thành công, mới chuyển nguồn đọc sang object storage. Nếu chưa tích hợp, chỉ dùng upload Render như demo tạm và giữ một bản sao ngoài Render.
+2. Chạy `--migrate-media-to-r2` để xem mapping, sau đó mới dùng `--apply`; công cụ xác minh bản copy trước khi cập nhật key, giữ nguyên asset ID và file local.
+3. Chọn `Storage__Provider=R2` và nhập các biến `R2__...`; API kiểm tra quyền trước khi cấp presigned GET, R2 xử lý tải byte và Range.
+4. `Storage__RootPath` chỉ dành cho local; không nhập bucket URL vào biến này. Giữ bucket private và chỉ đặt S3 credentials ở Backend.
+5. Kiểm tra upload/tải lại, GIF động, video seek và quyền Free/PRO trên Render trước và sau redeploy. Hướng dẫn và giới hạn signed URL ở mục R2 phía trên.
 
 Hạn mức file hiện giữ nguyên: ảnh/asset GIF 10 MiB, cover 5 MiB, audio 30 MiB, video 200 MiB; toàn request khoảng 202 MiB. Render Free có hạn mức tài nguyên/băng thông và cold start, cần test với media demo nhỏ trước. Xem thêm [MEDIA_STORAGE_OPERATIONS_VI.md](MEDIA_STORAGE_OPERATIONS_VI.md).
 

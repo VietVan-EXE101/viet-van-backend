@@ -4,6 +4,9 @@
 <ItemGroup><Compile Remove="tests/**/*.cs" /><Content Include="PrivateMedia/**" CopyToPublishDirectory="Never" /><EmbeddedResource Include="scripts/Upgrade_Drama_Platform.sql" /></ItemGroup>
 <ItemGroup><Content Update="appsettings.*.json;wwwroot/uploads/**;configuration/**" CopyToPublishDirectory="Never" /></ItemGroup>
 <ItemGroup>
+<!-- Giữ nhánh SDK hỗ trợ .NET 8, tránh dependency System.IO.Hashing 11 chỉ hỗ trợ .NET 10+. -->
+<PackageReference Include="AWSSDK.S3" Version="[4.0.104.12]" />
+<PackageReference Include="AWSSDK.Core" Version="[4.0.103]" />
 <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.10" />
 <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.10" />
 <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.10" />

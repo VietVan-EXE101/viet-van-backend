@@ -69,7 +69,7 @@ public class AdminWorksController(IWorkService service, WorkCoverStorage covers,
         {
             if (savedPath is not null)
             {
-                try { System.IO.File.Delete(savedPath); }
+                try { await covers.DeleteAsync(savedPath); }
                 catch (Exception cleanupError) { logger.LogError(cleanupError, "Không thể xóa ảnh bìa sau khi tạo tác phẩm thất bại."); }
             }
             if (ex is ArgumentException) return BadRequest(new { message = ex.Message });

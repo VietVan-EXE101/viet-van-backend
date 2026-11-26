@@ -23,8 +23,20 @@ public class DramaMediaController(VietVanDbContext db, EntitlementService entitl
         return await GetMedia(dramaId, assetId, ct);
     }
 
+    [HttpGet("{dramaId:int}/video/access")]
+    public async Task<IActionResult> VideoAccess(int dramaId, CancellationToken ct)
+    {
+        var drama = await platform.FindAsync(dramaId, User.IsInRole("Admin"), ct);
+        return drama.FreeVideoAssetId is int assetId ? await Serve(dramaId, assetId, true, ct) : NotFound();
+    }
+
+    [HttpGet("{dramaId:int}/assets/{assetId:int}/access")]
+    public Task<IActionResult> Access(int dramaId, int assetId, CancellationToken ct) => Serve(dramaId, assetId, true, ct);
+
     [HttpGet("{dramaId:int}/assets/{assetId:int}/media")]
-    public async Task<IActionResult> GetMedia(int dramaId, int assetId, CancellationToken ct)
+    public Task<IActionResult> GetMedia(int dramaId, int assetId, CancellationToken ct) => Serve(dramaId, assetId, false, ct);
+
+    private async Task<IActionResult> Serve(int dramaId, int assetId, bool json, CancellationToken ct)
     {
         var admin = User.IsInRole("Admin");
         var drama = await platform.FindAsync(dramaId, admin, ct);
@@ -32,19 +44,26 @@ public class DramaMediaController(VietVanDbContext db, EntitlementService entitl
         if (asset is null) return NotFound();
         var cover = asset.Kind == "Background" && asset.Title == DramaService.CoverAssetTitle;
         var video = asset.Id == drama.FreeVideoAssetId;
+        DateTimeOffset? notAfter = null;
         if (!admin && !cover && !video)
         {
             if (UserId is null) return Unauthorized();
             if (await entitlement.CurrentTierAsync(UserId.Value, ct) <= 0)
                 return StatusCode(403, new { code = "SUBSCRIPTION_REQUIRED", message = "Cần PRO còn hiệu lực để truy cập tài nguyên tương tác." });
             if (!await platform.IsPublishedAssetAsync(dramaId, assetId, ct)) return NotFound();
+            var until = await entitlement.VipUntilAsync(UserId.Value, ct);
+            if (until is null || until <= DateTime.UtcNow) return Forbid();
+            notAfter = new DateTimeOffset(DateTime.SpecifyKind(until.Value, DateTimeKind.Utc));
         }
-        var path = storage.ExistingPath(asset.RelativePath);
-        if (path is null) return NotFound();
+        var access = await storage.GetAccessAsync(asset.RelativePath, ct, notAfter, !cover && !video);
+        if (access is null) return NotFound();
         if (video) await platform.RecordViewAsync(dramaId, UserId, "FREE_VIDEO", ct);
         Response.Headers.CacheControl = "private, no-store";
         Response.Headers.XContentTypeOptions = "nosniff";
-        return PhysicalFile(path, asset.ContentType, enableRangeProcessing: true);
+        if (json) return Ok(new { url = access.Url ?? $"/api/dramas/{dramaId}/assets/{assetId}/media",
+            access.ExpiresAt, asset.ContentType, asset.SizeBytes });
+        // Giữ URL API cũ; R2 trả redirect để video/audio không đi qua RAM/băng thông Backend.
+        return access.Url is string url ? Redirect(url) : PhysicalFile(access.LocalPath!, asset.ContentType, enableRangeProcessing: true);
     }
 }
 
@@ -52,13 +71,21 @@ public class DramaMediaController(VietVanDbContext db, EntitlementService entitl
 public class AdminDramaMediaController(VietVanDbContext db, IFileStorageService storage) : ControllerBase
 {
     [HttpGet("{dramaId:int}/assets/{assetId:int}/media")]
-    public async Task<IActionResult> Get(int dramaId, int assetId, CancellationToken ct)
+    public Task<IActionResult> Get(int dramaId, int assetId, CancellationToken ct) => Serve(dramaId, assetId, false, ct);
+
+    [HttpGet("{dramaId:int}/assets/{assetId:int}/access")]
+    public Task<IActionResult> Access(int dramaId, int assetId, CancellationToken ct) => Serve(dramaId, assetId, true, ct);
+
+    private async Task<IActionResult> Serve(int dramaId, int assetId, bool json, CancellationToken ct)
     {
         var asset = await db.DramaAssets.AsNoTracking().SingleOrDefaultAsync(a => a.Id == assetId && a.DramaProductionId == dramaId, ct);
-        var path = asset is null ? null : storage.ExistingPath(asset.RelativePath);
-        if (path is null) return NotFound();
+        var access = asset is null ? null : await storage.GetAccessAsync(asset.RelativePath, ct, protectedAccess: true);
+        if (access is null) return NotFound();
         Response.Headers.CacheControl = "private, no-store";
-        return PhysicalFile(path, asset!.ContentType, enableRangeProcessing: true);
+        Response.Headers.XContentTypeOptions = "nosniff";
+        if (json) return Ok(new { url = access.Url ?? $"/api/admin/dramas/{dramaId}/assets/{assetId}/media",
+            access.ExpiresAt, asset!.ContentType, asset.SizeBytes });
+        return access.Url is string url ? Redirect(url) : PhysicalFile(access.LocalPath!, asset!.ContentType, enableRangeProcessing: true);
     }
 
     [HttpPut("{dramaId:int}/preview"), HttpPut("{dramaId:int}/assets/{assetId:int}/preview"), HttpPut("{dramaId:int}/scenes/{sceneId:int}/preview-media")]
