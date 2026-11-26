@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using VietVan.API.DTOs.Payments;
+using VietVan.API.DTOs.Common;
 using VietVan.API.Services.Payments;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -14,7 +15,11 @@ namespace VietVan.API.Controllers;
 [Route("api/subscription-packages")]
 public sealed class SubscriptionPackagesController(PaymentService service) : ControllerBase
 {
-    [HttpGet, AllowAnonymous] public async Task<IActionResult> List() => Ok(await service.PackagesAsync());
+    [HttpGet, AllowAnonymous]
+    [ProducesResponseType(typeof(List<PackageDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiErrorResponse), StatusCodes.Status500InternalServerError)]
+    [ProducesResponseType(typeof(ApiErrorResponse), StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> List() => Ok(await service.PackagesAsync());
 }
 
 [ApiController, Authorize]

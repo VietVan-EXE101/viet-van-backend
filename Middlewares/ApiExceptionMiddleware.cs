@@ -4,6 +4,7 @@ using VietVan.API.Services.Implementations;
 using VietVan.API.DTOs.Common;
 using VietVan.API.Services.Authentication;
 using VietVan.API.Services.Storage;
+using VietVan.API.Services.Payments;
 
 namespace VietVan.API.Middlewares;
 
@@ -19,7 +20,9 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
             var (status, message, code) = sql?.Number switch
             {
                 207 or 208 => (503, "Cấu trúc database chưa tương thích với Backend. Cần kiểm tra và chạy migration còn thiếu.", "DATABASE_UPGRADE_REQUIRED"),
-                -2 or -1 or 2 or 53 or 4060 or 18456 => (503, "Backend chưa kết nối được database. Vui lòng kiểm tra cấu hình và SQL Server.", "DATABASE_UNAVAILABLE"),
+                -2 or -1 or 2 or 20 or 53 or 64 or 233 or 258 or 10053 or 10054 or 10060 or 11001 or
+                    4060 or 18456 or 40197 or 40501 or 40613 or 10928 or 10929 =>
+                    (503, "Backend chưa kết nối được database. Vui lòng kiểm tra cấu hình và SQL Server.", "DATABASE_UNAVAILABLE"),
                 _ => Classify(ex)
             };
             if (status >= 500)
@@ -44,6 +47,8 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
 
     private static (int Status, string Message, string? Code) Classify(Exception ex)
     {
+        if (ex is SubscriptionPackagesReadException)
+            return (500, "Không thể tải danh sách gói đăng ký.", "SUBSCRIPTION_PACKAGES_UNAVAILABLE");
         if (ex is MediaStorageUnavailableException)
             return (503, "Kho media tạm thời không truy cập được.", "MEDIA_STORAGE_UNAVAILABLE");
         if (ex is PasswordResetNotConfiguredException)

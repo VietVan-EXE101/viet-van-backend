@@ -87,4 +87,44 @@ public class ApiExceptionMiddlewareTests
         Assert.Contains("DATABASE_UNAVAILABLE", body);
         Assert.DoesNotContain("private-database-diagnostic", body);
     }
+
+    [Theory]
+    [InlineData(10060, "DATABASE_UNAVAILABLE")]
+    [InlineData(10054, "DATABASE_UNAVAILABLE")]
+    [InlineData(11001, "DATABASE_UNAVAILABLE")]
+    [InlineData(233, "DATABASE_UNAVAILABLE")]
+    [InlineData(40613, "DATABASE_UNAVAILABLE")]
+    [InlineData(207, "DATABASE_UPGRADE_REQUIRED")]
+    public async Task PackageReadPreservesWrappedSqlFailureInsteadOfReturningStateConflict(int number, string code)
+    {
+        var error = new VietVan.API.Services.Payments.SubscriptionPackagesReadException(
+            new InvalidOperationException("EF provider wrapper", SqlError(number)));
+        var logger = new CaptureLogger();
+        var context = new DefaultHttpContext { TraceIdentifier = "packages-db-trace" };
+        context.Request.Path = "/api/subscription-packages"; context.Response.Body = new MemoryStream();
+        await new ApiExceptionMiddleware(_ => throw error, logger).InvokeAsync(context);
+        Assert.Equal(503, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+        var body = await new StreamReader(context.Response.Body).ReadToEndAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.Equal(code, json.RootElement.GetProperty("code").GetString());
+        Assert.DoesNotContain("private-database-diagnostic", body);
+        Assert.Same(error, logger.Exception); Assert.Contains("packages-db-trace", logger.Message);
+    }
+
+    [Fact]
+    public async Task UnexplainedPackageReadFailureIsLoggedAsServerErrorWhileBusinessConflictsStay409()
+    {
+        var logger = new CaptureLogger(); var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        var failure = new VietVan.API.Services.Payments.SubscriptionPackagesReadException(new InvalidOperationException("private-query-detail"));
+        await new ApiExceptionMiddleware(_ => throw failure, logger).InvokeAsync(context);
+        Assert.Equal(500, context.Response.StatusCode); Assert.Same(failure, logger.Exception);
+        context.Response.Body.Position = 0;
+        var body = await new StreamReader(context.Response.Body).ReadToEndAsync();
+        Assert.Contains("SUBSCRIPTION_PACKAGES_UNAVAILABLE", body); Assert.DoesNotContain("private-query-detail", body);
+        var business = new DefaultHttpContext(); business.Response.Body = new MemoryStream();
+        await new ApiExceptionMiddleware(_ => throw new InvalidOperationException("business state"), new CaptureLogger()).InvokeAsync(business);
+        Assert.Equal(409, business.Response.StatusCode);
+    }
 }

@@ -14,12 +14,20 @@ public sealed class PaymentService(VietVanDbContext db, IPaymentGateway gateway,
 {
     private readonly SePayOptions options = settings.Value;
 
-    public async Task<List<PackageDto>> PackagesAsync(bool admin = false) =>
-        await db.SubscriptionPackages.AsNoTracking()
+    public async Task<List<PackageDto>> PackagesAsync(bool admin = false)
+    {
+        try
+        {
+            return await db.SubscriptionPackages.AsNoTracking()
             .Where(p => admin || p.IsActive)
             .OrderBy(p => p.TierLevel).ThenBy(p => p.Price)
             .Select(p => new PackageDto(p.Id,p.Name,p.Description,p.Price,p.DurationInDays,
                 p.TierLevel,p.Benefits,p.IsActive,p.Code,p.BillingPeriod)).ToListAsync();
+        }
+        // Danh sách chỉ đọc không có xung đột trạng thái nghiệp vụ.
+        // EF có thể bọc lỗi provider trong InvalidOperationException: giữ nguyên cause để phân loại SQL.
+        catch (InvalidOperationException ex) { throw new SubscriptionPackagesReadException(ex); }
+    }
 
     public async Task<PackageDto> SavePackageAsync(int? id, EditPackageRequest input)
     {

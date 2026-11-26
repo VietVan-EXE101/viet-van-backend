@@ -8,6 +8,16 @@ Source hiện dùng PaymentOrders, PaymentBankTransactions, PaymentWebhookEvents
 
 Build và test nghiệp vụ đã chạy bằng .NET; chưa xác minh SQL Server, SMTP, Google hoặc giao dịch SePay thật. Test thanh toán dùng SQLite và receipt giả lập bên trong test, không có endpoint giả lập trong API và không chuyển tiền thật. Việc đọc SQL Server ngoài sandbox bị từ chối; không thay đổi database trong phiên refactor này.
 
+### Chẩn đoán GET /api/subscription-packages trên Render
+
+Endpoint public chỉ SELECT các gói active, sắp xếp theo tier/giá; không yêu cầu JWT, khóa SePay hoặc R2. Truy vấn và DTO thành công được giữ nguyên. EF Core SQL Server có thể bọc một số lỗi provider trong `InvalidOperationException` ([source EF 8.0.10](https://github.com/dotnet/efcore/blob/v8.0.10/src/EFCore.SqlServer/Storage/Internal/SqlServerExecutionStrategy.cs)); middleware trước đây đổi mọi exception loại này thành 409 nên có thể che lỗi hạ tầng thành xung đột nghiệp vụ. Chỉ từ response 409 chưa xác định được lỗi gốc trên Render.
+
+Luồng đọc gói hiện giữ cause trong `SubscriptionPackagesReadException` để phân loại SQL: thiếu bảng/cột trả 503 `DATABASE_UPGRADE_REQUIRED`; lỗi kết nối/DNS/timeout/reset thường gặp trả 503 `DATABASE_UNAVAILABLE`; lỗi đọc dạng InvalidOperation chưa phân loại trả 500 `SUBSCRIPTION_PACKAGES_UNAVAILABLE` và ghi exception/trace ở server. Response không chứa SQL, connection string hoặc provider message. Các xung đột nghiệp vụ 409 khi tạo/hủy đơn được giữ nguyên. Không bật retry toàn bộ transaction hoặc thay dữ liệu/gói để che lỗi đọc.
+
+Sau khi deploy bản sửa, gọi lại endpoint rồi đối chiếu Render Logs bằng traceId mới và `SqlNumber`. Nếu vẫn lỗi, cần exception thực tế và kết quả API đọc khác như `/api/works?page=1&pageSize=10` để xác định kết nối Render–Somee, schema hoặc dữ liệu. Kiểm tra biến `ConnectionStrings__DefaultConnection` ở Render riêng: cấu hình local không được publish lên Render. Không import lại hoặc chạy migration chỉ dựa trên 409.
+
+Kiểm thử offline có chặn kết nối mạng: pipeline SQL Server của endpoint public trả DTO với Code/BillingPeriod null từ dữ liệu giả lập gói import, không cần cấu hình ngân hàng; SQL lỗi bọc nhiều lớp vẫn có response/trace đúng; không trả chi tiết provider cho client; business conflict vẫn 409. **225/225 test hồi quy đạt**, báo cáo `tests/VietVan.Payment.Tests/TestResults/subscription-package-regression.trx`. Chưa xác minh bản sửa trên Render hoặc đọc Somee thật trong lần chẩn đoán này.
+
 ## 1. Sơ đồ thanh toán
 
 ```
