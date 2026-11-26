@@ -52,6 +52,7 @@ public static class DatabaseReadOnlyCheck
             if (!paymentsOnly)
             {
                 passed &= await CheckTableAsync<EmailVerificationRecord>(db, connection, output, timeout.Token);
+                passed &= await CheckTableAsync<PasswordResetRecord>(db, connection, output, timeout.Token);
                 passed &= await CheckTableAsync<DramaProduction>(db, connection, output, timeout.Token);
                 passed &= await CheckTableAsync<DramaAsset>(db, connection, output, timeout.Token);
                 passed &= await CheckTableAsync<DramaScene>(db, connection, output, timeout.Token);

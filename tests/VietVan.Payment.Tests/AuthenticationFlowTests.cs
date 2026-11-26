@@ -42,6 +42,29 @@ public class AuthenticationFlowTests
             throw new System.Net.Mail.SmtpException(System.Net.Mail.SmtpStatusCode.ClientNotPermitted, "private-provider-diagnostic");
     }
 
+    private sealed class RejectHttpEmail(System.Net.HttpStatusCode status) : IEmailSender
+    {
+        public Task SendAsync(string recipient, string subject, string html, CancellationToken cancellationToken = default) =>
+            throw new HttpRequestException("private-http-diagnostic", null, status);
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(429)]
+    public async Task ForgotHttpFailureLogsSafeProviderStatusWithoutChangingGenericResponse(int status)
+    {
+        await using var f = await PlatformTestDatabase.CreateAsync(); var user = await f.AddUserAsync(); var logs = new SessionLogs();
+        var sessions = new AccountSessionService(f.Db, new RejectHttpEmail((System.Net.HttpStatusCode)status), Config,
+            new PlatformEnvironment(), logs);
+        await sessions.ForgotAsync(user.Email, default);
+        var failed = Assert.Single(logs.Messages, m => m.Contains("PasswordResetEmailFailed"));
+        Assert.Contains("HttpStatus=" + status, failed);
+        Assert.DoesNotContain("private-http-diagnostic", string.Join("\n", logs.Messages));
+        Assert.DoesNotContain(user.Email, string.Join("\n", logs.Messages));
+        Assert.DoesNotContain(logs.Messages, m => m.Contains("AcceptedByProvider"));
+    }
+
     [Theory]
     [InlineData("http://app.example.com/reset-password")]
     [InlineData("https://app.example.com/reset-password#existing-fragment")]

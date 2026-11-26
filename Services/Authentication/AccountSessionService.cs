@@ -58,7 +58,9 @@ public sealed class AccountSessionService(VietVanDbContext db, IEmailSender send
         catch (Exception ex)
         {
             var smtpStatus = ex is System.Net.Mail.SmtpException smtp ? smtp.StatusCode.ToString() : null;
-            logger.LogWarning("PasswordResetEmailFailed UserId={UserId} Type={ErrorType} SmtpStatus={SmtpStatus}", user.Id, ex.GetType().Name, smtpStatus);
+            var httpStatus = ex is HttpRequestException http ? (int?)http.StatusCode : null;
+            logger.LogWarning("PasswordResetEmailFailed UserId={UserId} Sender={Sender} Type={ErrorType} HttpStatus={HttpStatus} SmtpStatus={SmtpStatus}",
+                user.Id, sender.GetType().Name, ex.GetType().Name, httpStatus, smtpStatus);
         }
     }
 
