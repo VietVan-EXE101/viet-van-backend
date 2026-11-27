@@ -11,7 +11,7 @@ ENV ASPNETCORE_ENVIRONMENT=Production \
     PORT=10000 \
     Storage__Provider=R2 \
     Swagger__Enabled=true \
-    Email__Provider=Resend
+    Email__Provider=Gmail
 EXPOSE 10000
 COPY --from=build --chown=app:app /out .
 RUN mkdir -p /app/PrivateMedia /app/wwwroot/uploads/work-covers \

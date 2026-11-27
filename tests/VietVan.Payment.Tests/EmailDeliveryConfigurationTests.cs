@@ -12,7 +12,7 @@ public class EmailDeliveryConfigurationTests
     private static IConfiguration Config(Dictionary<string, string?> values) => new ConfigurationBuilder().AddInMemoryCollection(values).Build();
     private static Dictionary<string, string?> Settings() => new()
     {
-        ["RENDER"] = "true", ["Email:Resend:ApiKey"] = "test-secret-sentinel",
+        ["RENDER"] = "true", ["Email:Provider"] = "Resend", ["Email:Resend:ApiKey"] = "test-secret-sentinel",
         ["Email:Resend:FromAddress"] = "sender@example.test",
         ["Email:VerificationBaseUrl"] = "https://backend.example.test"
     };
@@ -24,10 +24,50 @@ public class EmailDeliveryConfigurationTests
         using var output = new StringWriter();
         Assert.Equal(1, await EmailDeliveryConfiguration.CheckAsync(Config(values), new PlatformEnvironment { EnvironmentName = "Production" }, output));
         var log = output.ToString();
-        Assert.Contains("Provider=Resend", log);
-        Assert.Contains("Email:Resend:ApiKey", log); Assert.Contains("Email:Resend:FromAddress", log);
+        Assert.Contains("Provider=Gmail", log);
+        Assert.Contains("Email:Gmail:ClientId", log); Assert.Contains("Email:Gmail:ClientSecret", log);
+        Assert.Contains("Email:Gmail:RefreshToken", log); Assert.Contains("Email:Gmail:FromAddress", log);
         Assert.Contains("Email:VerificationBaseUrl", log);
         Assert.DoesNotContain("oauth-secret-sentinel", log);
+    }
+
+    [Theory]
+    [InlineData("Gmail")]
+    [InlineData("gmail")]
+    public async Task GmailDiagnosticsValidateOnlySelectedTransportWithoutPrintingSecrets(string provider)
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["RENDER"] = "true", ["Email:Provider"] = provider,
+            ["Email:Gmail:ClientId"] = "client-sentinel.apps.googleusercontent.com",
+            ["Email:Gmail:ClientSecret"] = "secret-sentinel", ["Email:Gmail:RefreshToken"] = "refresh-sentinel",
+            ["Email:Gmail:FromAddress"] = "sender@gmail.com", ["Email:VerificationBaseUrl"] = "https://backend.example.test"
+        };
+        using var output = new StringWriter();
+        Assert.Equal(0, await EmailDeliveryConfiguration.CheckAsync(Config(settings), new PlatformEnvironment { EnvironmentName = "Production" }, output));
+        Assert.Contains("Provider=Gmail", output.ToString());
+        Assert.Contains("ConfigurationReady=True", output.ToString());
+        foreach (var secret in new[] { "client-sentinel", "secret-sentinel", "refresh-sentinel", "sender@gmail.com" })
+            Assert.DoesNotContain(secret, output.ToString());
+        settings.Remove("Email:Gmail:RefreshToken");
+        Assert.Contains("Email:Gmail:RefreshToken", EmailDeliveryConfiguration.InvalidKeys(Config(settings), new PlatformEnvironment()));
+    }
+
+    [Fact]
+    public void LocalDefaultRemainsSmtpAndRenderDefaultUsesGmail()
+    {
+        Assert.Equal("Smtp", EmailDeliveryConfiguration.Provider(Config(new())));
+        Assert.Equal("Gmail", EmailDeliveryConfiguration.Provider(Config(new() { ["RENDER"] = "true" })));
+    }
+
+    [Theory]
+    [InlineData("REPLACE_GMAIL_CLIENT_SECRET", "refresh-token", "sender@gmail.com", "Email:Gmail:ClientSecret")]
+    [InlineData("client-secret", "bad\ntoken", "sender@gmail.com", "Email:Gmail:RefreshToken")]
+    [InlineData("client-secret", "refresh-token", "sender@gmail.com\r\nBcc: other@example.com", "Email:Gmail:FromAddress")]
+    public void GmailRejectsPlaceholderSecretsAndHeaderInjection(string secret, string token, string from, string invalid)
+    {
+        var options = new GmailEmailOptions { ClientId = "client-id", ClientSecret = secret, RefreshToken = token, FromAddress = from };
+        Assert.Contains(invalid, options.InvalidKeys());
     }
 
     [Theory]

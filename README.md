@@ -1,6 +1,64 @@
 # viet-van-backend
 Backend API for Viet Van Platform
 
+## Gửi email bằng Gmail API — cấu hình hiện tại từ 27/11/2026
+
+Docker và mặc định Render hiện chọn `Email__Provider=Gmail`. Những phần Resend phía dưới là hướng dẫn phương án cũ/tùy chọn; biến Environment trên Render luôn ưu tiên hơn mặc định Docker. Local ngoài Render/Docker vẫn mặc định SMTP.
+
+`GmailEmailSender` gửi thư xác minh và đặt lại mật khẩu qua HTTPS bằng cùng `IEmailSender`, không cần tên miền riêng. API public, thời hạn/token reset và phản hồi chung chống dò tài khoản giữ nguyên. Gmail vẫn có hạn mức gửi và bộ lọc thư rác; provider chấp nhận không đảm bảo thư vào Inbox.
+
+### 1. Bật Gmail API và tạo OAuth client gửi thư
+
+1. Mở [Google Cloud Console](https://console.cloud.google.com/), tạo project riêng, ví dụ `VietVan Mail`. Chọn Gmail sẽ dùng gửi thư.
+2. Trong project này, vào **APIs & Services → Library → Gmail API → Enable**.
+3. Mở **Google Auth Platform → Branding**, nhập tên ứng dụng, email hỗ trợ và email liên hệ.
+4. Ở **Audience**, chọn **External** nếu dùng Gmail cá nhân; khi còn **Testing**, thêm Gmail gửi thư vào **Test users**. Người nhận email không cần là Test user: chỉ chủ Gmail gửi cấp quyền OAuth.
+5. Ở **Data Access**, thêm scope `https://www.googleapis.com/auth/gmail.send`. Không yêu cầu quyền đọc hộp thư.
+6. Vào **Clients → Create client → Web application**. Tạo client riêng cho gửi thư, không chỉnh client hoặc các biến `GoogleSignIn__*` hiện có.
+7. Thêm **Authorized redirect URI** chính xác: `https://developers.google.com/oauthplayground`.
+8. Lưu Client ID và Client secret riêng tư để dùng ở bước 2. Không đưa secret vào Git/chat/ảnh.
+
+Tham khảo: [cấp quyền OAuth server](https://developers.google.com/identity/protocols/oauth2/web-server), [quyền gửi Gmail](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send).
+
+### 2. Lấy refresh token cho Gmail gửi thư
+
+Mở [OAuth Playground của Google](https://developers.google.com/oauthplayground/):
+
+1. Nhấn biểu tượng bánh răng, bật **Use your own OAuth credentials**; điền Client ID và Client secret vừa tạo.
+2. Giữ **OAuth endpoints = Google**, **Access type = Offline**, **Force prompt = Consent Screen**.
+3. Ở Step 1 nhập scope `https://www.googleapis.com/auth/gmail.send`, chọn **Authorize APIs** và đăng nhập đúng Gmail gửi thư. Kiểm tra đúng ứng dụng/project của bạn trước khi cấp quyền.
+4. Sang Step 2, chọn **Exchange authorization code for tokens**.
+5. Sao chép **Refresh token** vào cấu hình riêng tư. Backend tự đổi nó lấy access token khi gửi; không cấu hình bằng Access token ngắn hạn.
+
+Phải dùng OAuth credentials của chính bạn: token tạo bằng credentials mặc định của Playground bị thu hồi sau 24 giờ theo [ghi chú Playground](https://developers.google.com/oauthplayground/). Với External app ở **Testing** và scope Gmail, refresh token hết hạn sau 7 ngày; cần cấp lại token để tiếp tục demo. Triển khai lâu dài cần xem publishing/verification phù hợp trong Google Cloud, không coi chuyển sang Production là đảm bảo đã được duyệt. Xem [vòng đời refresh token](https://developers.google.com/identity/protocols/oauth2#expiration).
+
+### 3. Cấu hình Render và triển khai bản code này
+
+Trong **Render → viet-van-backend → Environment**, chỉ thêm/sửa các biến email:
+
+| Biến | Giá trị |
+|---|---|
+| `Email__Provider` | `Gmail` (đổi cả biến `Resend` đang có nếu có) |
+| `Email__Gmail__ClientId` | Client ID của OAuth client gửi thư |
+| `Email__Gmail__ClientSecret` | Client secret của client đó |
+| `Email__Gmail__RefreshToken` | Refresh token ở bước 2 |
+| `Email__Gmail__FromAddress` | Gmail đã cấp quyền ở bước 2 |
+| `Email__VerificationBaseUrl` | `https://viet-van-backend.onrender.com` |
+
+`Email__PasswordResetUrl` vẫn tùy chọn; trống thì email chứa mã reset để gọi API. Không dùng Gmail password, App Password, Client ID Google đăng nhập hoặc Resend key thay cho refresh token. Gmail cá nhân được hỗ trợ; không dùng service account thuần để thay thế quyền OAuth của Gmail cá nhân.
+
+Giữ nguyên `Storage__Provider=R2`, toàn bộ biến `R2__*`, connection string và dữ liệu hiện tại. Save/redeploy chỉ sau khi branch Render triển khai có bản code Gmail này. Không chạy lệnh migration, seed, upload, restore hay xóa media khi chuyển email provider. Phần gửi Gmail không phụ thuộc DbContext hoặc dịch vụ storage.
+
+### 4. Kiểm tra
+
+- Startup cần có `Email delivery configured Provider=Gmail ConfigurationReady=True InvalidKeys=none`. Đây chỉ là xác thực cấu hình có đủ trường.
+- Có thể chạy `dotnet run --launch-profile http -- --check-email-config` trên máy đã đặt các cấu hình Gmail tương ứng. Lệnh này không gọi Google, SQL hoặc R2; nó chỉ đọc cấu hình của tiến trình local, không đọc Environment của Render.
+- Lệnh Development `dotnet run --launch-profile http -- --test-email YOUR_TEST_EMAIL` gửi một thư qua provider đã chọn rồi thoát trước khởi tạo database/storage/worker. Chỉ chạy sau khi đặt secrets local riêng tư; đừng chép secrets lên dòng lệnh dùng chung. Không cần chạy lệnh này nếu kiểm tra trực tiếp API Production.
+- Chờ hơn một phút từ lần yêu cầu trước, gọi `POST /api/auth/forgot-password` cho tài khoản đang tồn tại và không bị khóa. Kiểm tra `PasswordResetEmailAcceptedByProvider` hoặc `PasswordResetEmailFailed ... HttpStatus=...` trong Render Logs; kiểm tra Gmail gửi → Sent và hộp thư người nhận/Spam.
+- OAuth HTTP 400 thường cần kiểm tra token hết hạn/bị thu hồi hoặc sai cặp client; HTTP 401/403 cần kiểm tra quyền Gmail, API đã bật, token và account gửi; HTTP 429 cần kiểm tra hạn mức. Không kết luận nguyên nhân cụ thể nếu chưa xem Google Console. Provider body/secret/token/nội dung thư không được ghi vào log.
+
+Kiểm thử thực hiện bằng HTTP giả lập và SQLite/R2 trong bộ nhớ; không gọi Gmail, database cloud hay bucket R2 thật. **306/306 test đạt**, báo cáo `tests/VietVan.Payment.Tests/TestResults/gmail-full-regression.trx`; publish Release thành công tại `artifacts/gmail-api-publish`. Chưa có OAuth grant thực hoặc deploy Render từ lượt sửa này.
+
 ## Cloudflare R2 private storage
 
 Tích hợp .NET 8, `AWSSDK.S3` 4.0.104.12 và `AWSSDK.Core` 4.0.103 được cố định phiên bản để tránh dependency không hỗ trợ .NET 8, bucket private `vietvan-media`. Xem dependency chính thức [S3 4.0.104.12](https://www.nuget.org/packages/AWSSDK.S3/4.0.104.12) và [Core 4.0.103](https://www.nuget.org/packages/AWSSDK.Core/4.0.103). Không sửa FE, auth/Google/SePay hoặc Connection String. Bộ khóa xuất hiện trong ảnh cần được thu hồi và thay bằng khóa mới; không dùng hoặc đưa chúng vào source, log, README hay lệnh shell có chứa secret.

@@ -86,7 +86,8 @@ if (testEmail)
         var provider = EmailDeliveryConfiguration.Provider(builder.Configuration);
         var smtp = builder.Configuration.GetSection("Email:Smtp").Get<SmtpEmailOptions>() ?? new();
         var resend = builder.Configuration.GetSection("Email:Resend").Get<ResendEmailOptions>() ?? new();
-        var invalid = provider == "Resend" ? resend.InvalidKeys() : smtp.InvalidKeys();
+        var gmail = builder.Configuration.GetSection("Email:Gmail").Get<GmailEmailOptions>() ?? new();
+        var invalid = provider switch { "Gmail" => gmail.InvalidKeys(), "Resend" => resend.InvalidKeys(), _ => smtp.InvalidKeys() };
         if (invalid.Count > 0)
         {
             Console.Error.WriteLine("Thiếu hoặc sai cấu hình: " + string.Join(", ", invalid));
@@ -94,9 +95,12 @@ if (testEmail)
             return;
         }
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
-        IEmailSender sender = provider == "Resend"
-            ? new ResendEmailSender(http, Microsoft.Extensions.Options.Options.Create(resend))
-            : new SmtpEmailSender(Microsoft.Extensions.Options.Options.Create(smtp));
+        IEmailSender sender = provider switch
+        {
+            "Gmail" => new GmailEmailSender(http, Microsoft.Extensions.Options.Options.Create(gmail)),
+            "Resend" => new ResendEmailSender(http, Microsoft.Extensions.Options.Options.Create(resend)),
+            _ => new SmtpEmailSender(Microsoft.Extensions.Options.Options.Create(smtp))
+        };
         await sender.SendAsync(testRecipient!, "Kiểm tra email Việt Văn", "<p>Đây là email kiểm tra cấu hình gửi thư Việt Văn.</p>");
         Console.WriteLine($"Provider={provider} đã chấp nhận email thử; hãy kiểm tra hộp thư và thư rác. Không sửa database/media.");
     }
@@ -177,15 +181,22 @@ builder.Services.AddSingleton<IConfigurationManager<OpenIdConnectConfiguration>>
 builder.Services.AddScoped<IGoogleIdTokenValidator, GoogleIdTokenValidator>();
 builder.Services.Configure<SmtpEmailOptions>(builder.Configuration.GetSection("Email:Smtp"));
 builder.Services.Configure<ResendEmailOptions>(builder.Configuration.GetSection("Email:Resend"));
+builder.Services.Configure<GmailEmailOptions>(builder.Configuration.GetSection("Email:Gmail"));
 var emailProvider = EmailDeliveryConfiguration.Provider(builder.Configuration);
-if (emailProvider.Equals("Resend", StringComparison.OrdinalIgnoreCase))
+if (emailProvider.Equals("Gmail", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddHttpClient<GmailEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(30))
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+    builder.Services.AddScoped<IEmailSender>(services => services.GetRequiredService<GmailEmailSender>());
+}
+else if (emailProvider.Equals("Resend", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddHttpClient<ResendEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(30))
         .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
     builder.Services.AddScoped<IEmailSender>(services => services.GetRequiredService<ResendEmailSender>());
 }
 else if (emailProvider.Equals("Smtp", StringComparison.OrdinalIgnoreCase)) builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
-else throw new InvalidOperationException("Email__Provider chỉ hỗ trợ Smtp hoặc Resend.");
+else throw new InvalidOperationException("Email__Provider chỉ hỗ trợ Gmail, Smtp hoặc Resend.");
 builder.Services.AddScoped<AccountVerificationService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<AccountSessionService>();
@@ -312,7 +323,7 @@ if (renderDeployment)
 {
     app.UseForwardedHeaders();
     if (emailProvider.Equals("Smtp", StringComparison.OrdinalIgnoreCase))
-        app.Logger.LogWarning("Render Free chặn SMTP 25/465/587. Dùng Email__Provider=Resend để gửi qua HTTPS.");
+        app.Logger.LogWarning("Render Free chặn SMTP 25/465/587. Dùng Email__Provider=Gmail hoặc Resend để gửi qua HTTPS.");
 }
 var activeStorage = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<StorageOptions>>().Value;
 var activeBucket = activeStorage.Provider.Equals("R2", StringComparison.OrdinalIgnoreCase)

@@ -7,10 +7,11 @@ public static class EmailDeliveryConfiguration
 {
     public static string Provider(IConfiguration configuration)
     {
-        var value = configuration["Email:Provider"] ?? (DeploymentConfiguration.IsRender(configuration) ? "Resend" : "Smtp");
+        var value = configuration["Email:Provider"] ?? (DeploymentConfiguration.IsRender(configuration) ? "Gmail" : "Smtp");
+        if (value.Equals("Gmail", StringComparison.OrdinalIgnoreCase)) return "Gmail";
         if (value.Equals("Resend", StringComparison.OrdinalIgnoreCase)) return "Resend";
         if (value.Equals("Smtp", StringComparison.OrdinalIgnoreCase)) return "Smtp";
-        throw new InvalidOperationException("Email__Provider chỉ hỗ trợ Smtp hoặc Resend.");
+        throw new InvalidOperationException("Email__Provider chỉ hỗ trợ Gmail, Smtp hoặc Resend.");
     }
 
     public static Uri VerificationBaseUri(IConfiguration configuration, IWebHostEnvironment environment)
@@ -29,7 +30,9 @@ public static class EmailDeliveryConfiguration
         var invalid = new List<string>();
         try
         {
-            if (Provider(configuration) == "Resend")
+            if (Provider(configuration) == "Gmail")
+                invalid.AddRange((configuration.GetSection("Email:Gmail").Get<GmailEmailOptions>() ?? new()).InvalidKeys());
+            else if (Provider(configuration) == "Resend")
                 invalid.AddRange((configuration.GetSection("Email:Resend").Get<ResendEmailOptions>() ?? new()).InvalidKeys());
             else invalid.AddRange((configuration.GetSection("Email:Smtp").Get<SmtpEmailOptions>() ?? new()).InvalidKeys());
         }
@@ -60,12 +63,12 @@ public static class EmailDeliveryConfiguration
         string provider;
         try { provider = Provider(configuration); }
         catch (InvalidOperationException)
-        { await output.WriteLineAsync("FAIL Email:Provider (Smtp or Resend required; value hidden)"); return 1; }
+        { await output.WriteLineAsync("FAIL Email:Provider (Gmail, Smtp or Resend required; value hidden)"); return 1; }
         var invalid = InvalidKeys(configuration, environment);
         await output.WriteLineAsync($"Provider={provider}; Render={DeploymentConfiguration.IsRender(configuration)}; ConfigurationReady={invalid.Count == 0}");
         foreach (var key in invalid) await output.WriteLineAsync("FAIL " + key);
         if (provider == "Smtp" && DeploymentConfiguration.IsRender(configuration))
-            await output.WriteLineAsync("WARNING Render Free blocks SMTP ports 25/465/587; select Email__Provider=Resend and configure HTTPS delivery.");
+            await output.WriteLineAsync("WARNING Render Free blocks SMTP ports 25/465/587; select Email__Provider=Gmail or Resend and configure HTTPS delivery.");
         if (UsesResendTestSender(configuration))
             await output.WriteLineAsync("WARNING TEST_SENDER_RESTRICTION: Resend test sender only emails the account owner; verify a domain for other recipients.");
         await output.WriteLineAsync("No secrets, addresses or URLs printed. Valid configuration does not prove provider acceptance or inbox delivery.");
